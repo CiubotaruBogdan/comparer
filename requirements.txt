@@ -1,0 +1,4 @@
+PyQt5>=5.15.0
+python-docx>=0.8.11
+PyMuPDF>=1.23.0
+pyinstaller>=6.0.0
