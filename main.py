@@ -26,8 +26,9 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QTextBrowser, QSplitter, QFrame,
     QFileDialog, QStackedWidget, QMessageBox, QSizePolicy, QProgressBar,
+    QShortcut,
 )
-from PyQt5.QtCore import Qt, pyqtSignal, QThread, pyqtSlot, QShortcut
+from PyQt5.QtCore import Qt, pyqtSignal, QThread, pyqtSlot
 from PyQt5.QtGui import QFont, QColor, QPalette, QIcon, QKeySequence
 
 
