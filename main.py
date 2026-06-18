@@ -25,7 +25,7 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QTextBrowser, QSplitter, QFrame,
     QFileDialog, QStackedWidget, QMessageBox, QSizePolicy, QProgressBar,
-    QShortcut,
+    QShortcut, QSpinBox,
 )
 from PyQt5.QtCore import Qt, pyqtSignal, QThread, pyqtSlot
 from PyQt5.QtGui import QFont, QColor, QPalette, QIcon, QKeySequence
@@ -213,19 +213,24 @@ def compare_documents(paras1: list, paras2: list) -> dict:
             diff_positions.append(i)
         in_diff = is_diff
 
-    left_html  = render_html(left_blocks,  "left",  diff_positions)
-    right_html = render_html(right_blocks, "right", diff_positions)
-
     return {
-        "similarity":  similarity,
-        "left_html":   left_html,
-        "right_html":  right_html,
-        "stats":       stats,
-        "diff_count":  len(diff_positions),
+        "similarity":    similarity,
+        "left_blocks":   left_blocks,
+        "right_blocks":  right_blocks,
+        "diff_positions": diff_positions,
+        "stats":         stats,
+        "diff_count":    len(diff_positions),
     }
 
 
-def render_html(blocks: list, side: str, diff_positions: list = None) -> str:
+def render_html(
+    blocks: list,
+    side: str,
+    diff_positions: list = None,
+    padding_y: int = 7,
+    selected_block: int = -1,
+    interactive: bool = True,
+) -> str:
     STYLE = {
         "equal":       ("#FFFFFF", "#E0E0E0", "3px solid",  ""),
         "replace":     ("#FFECB3", "#FFB300", "3px solid",  ""),
@@ -243,7 +248,6 @@ def render_html(blocks: list, side: str, diff_positions: list = None) -> str:
                    'margin-left:8px;font-family:inherit;">NOU</span>'),
     }
 
-    # Mapare bloc_idx -> grup_idx pentru ancorele de navigare
     anchor_map: dict = {}
     if diff_positions:
         for group_idx, block_idx in enumerate(diff_positions):
@@ -259,6 +263,10 @@ def render_html(blocks: list, side: str, diff_positions: list = None) -> str:
     for block_idx, (status, content, is_html) in enumerate(blocks):
         bg, bl_color, bl_width, extra_style = STYLE.get(status, STYLE["equal"])
 
+        if block_idx == selected_block and status != "placeholder":
+            bg = "#EBEBEB"
+            bl_color = "#888888"
+
         anchor = ""
         if block_idx in anchor_map:
             anchor = f'<a name="diff-{anchor_map[block_idx]}"></a>'
@@ -270,17 +278,22 @@ def render_html(blocks: list, side: str, diff_positions: list = None) -> str:
             badge = BADGE["insert"]
 
         if status == "placeholder":
-            body = anchor
+            inner = ""
         elif is_html:
-            body = f"{anchor}{badge}<span>{content}</span>"
+            inner = f"{badge}<span>{content}</span>"
         else:
-            body = f"{anchor}{badge}<span>{html_lib.escape(content)}</span>"
+            inner = f"{badge}<span>{html_lib.escape(content)}</span>"
+
+        if interactive and status != "placeholder":
+            inner = (f'<a href="sel:{block_idx}" '
+                     f'style="text-decoration:none;color:inherit;">{inner}</a>')
+
+        body = f"{anchor}{inner}"
 
         lines.append(
             f'<div style="background:{bg};'
             f'border-left:{bl_width} {bl_color};'
-            f'{extra_style}'
-            f'margin:2px 0;padding:7px 10px;'
+            f'margin:2px 0;padding:{padding_y}px 10px;'
             f'border-radius:0 2px 2px 0;min-height:22px;overflow:hidden;">'
             f'{body}</div>'
         )
@@ -289,18 +302,18 @@ def render_html(blocks: list, side: str, diff_positions: list = None) -> str:
     return "\n".join(lines)
 
 
-def export_html_report(path1: str, path2: str, result: dict) -> str:
+def export_html_report(path1: str, path2: str, result: dict, padding_y: int = 7) -> str:
     sim   = result["similarity"]
     stats = result["stats"]
-    # Escapăm numele fișierelor pentru a preveni injecție HTML
     n1 = html_lib.escape(Path(path1).name)
     n2 = html_lib.escape(Path(path2).name)
-    body_l = (result["left_html"]
-              .split("<body", 1)[1].split(">", 1)[1]
-              .rsplit("</body>", 1)[0])
-    body_r = (result["right_html"]
-              .split("<body", 1)[1].split(">", 1)[1]
-              .rsplit("</body>", 1)[0])
+    # Generăm HTML fără link-uri interactive și fără selecție
+    export_l = render_html(result["left_blocks"],  "left",  result["diff_positions"],
+                           padding_y=padding_y, interactive=False)
+    export_r = render_html(result["right_blocks"], "right", result["diff_positions"],
+                           padding_y=padding_y, interactive=False)
+    body_l = export_l.split("<body", 1)[1].split(">", 1)[1].rsplit("</body>", 1)[0]
+    body_r = export_r.split("<body", 1)[1].split(">", 1)[1].rsplit("</body>", 1)[0]
 
     return f"""<!DOCTYPE html>
 <html lang="ro">
@@ -571,6 +584,8 @@ class CompareWindow(QMainWindow):
         self._worker: Optional[CompareWorker] = None
         self._current_diff   = 0
         self._diff_count     = 0
+        self._padding_y      = 7
+        self._selected_block = -1
         self._setup_ui()
         self._setup_shortcuts()
 
@@ -743,6 +758,8 @@ class CompareWindow(QMainWindow):
 
         self.left_browser.verticalScrollBar().valueChanged.connect(self._sync_l2r)
         self.right_browser.verticalScrollBar().valueChanged.connect(self._sync_r2l)
+        self.left_browser.anchorClicked.connect(self._on_anchor_clicked)
+        self.right_browser.anchorClicked.connect(self._on_anchor_clicked)
 
         return page
 
@@ -813,6 +830,26 @@ class CompareWindow(QMainWindow):
         lay.addWidget(self.sim_badge)
         lay.addStretch()
         lay.addWidget(self.right_name_lbl)
+        lay.addSpacing(12)
+
+        # Control spațiere paragrafe
+        spacing_lbl = QLabel("Spat.")
+        spacing_lbl.setFont(f)
+        spacing_lbl.setStyleSheet("color:#999;")
+        self.spacing_spin = QSpinBox()
+        self.spacing_spin.setRange(2, 24)
+        self.spacing_spin.setValue(self._padding_y)
+        self.spacing_spin.setSuffix(" px")
+        self.spacing_spin.setFixedWidth(62)
+        self.spacing_spin.setStyleSheet(
+            "QSpinBox { border:1px solid #CCC; border-radius:4px; padding:2px 4px; "
+            "background:#fff; color:#111; font-size:9pt; }"
+            "QSpinBox::up-button, QSpinBox::down-button { width:14px; }"
+        )
+        self.spacing_spin.valueChanged.connect(self._on_spacing_changed)
+
+        lay.addWidget(spacing_lbl)
+        lay.addWidget(self.spacing_spin)
         lay.addSpacing(8)
         lay.addWidget(self.export_btn)
 
@@ -982,10 +1019,40 @@ class CompareWindow(QMainWindow):
         self._set_busy(False)
         QMessageBox.critical(self, "Eroare", msg)
 
-    def _update_compare_page(self, result: dict):
-        self.left_browser.setHtml(result["left_html"])
-        self.right_browser.setHtml(result["right_html"])
+    def _rerender_browsers(self):
+        if not self._result:
+            return
+        lv = self.left_browser.verticalScrollBar().value()
+        rv = self.right_browser.verticalScrollBar().value()
+        html_l = render_html(
+            self._result["left_blocks"], "left", self._result["diff_positions"],
+            self._padding_y, self._selected_block,
+        )
+        html_r = render_html(
+            self._result["right_blocks"], "right", self._result["diff_positions"],
+            self._padding_y, self._selected_block,
+        )
+        self._syncing = True
+        self.left_browser.setHtml(html_l)
+        self.right_browser.setHtml(html_r)
+        self._syncing = False
+        self.left_browser.verticalScrollBar().setValue(lv)
+        self.right_browser.verticalScrollBar().setValue(rv)
 
+    def _on_anchor_clicked(self, url):
+        s = url.toString()
+        if not s.startswith("sel:"):
+            return
+        idx = int(s.split(":")[1])
+        self._selected_block = -1 if self._selected_block == idx else idx
+        self._rerender_browsers()
+
+    def _on_spacing_changed(self, value: int):
+        self._padding_y = value
+        self._rerender_browsers()
+
+    def _update_compare_page(self, result: dict):
+        self._selected_block = -1
         sim    = result["similarity"]
         stats  = result["stats"]
         sim_pct = f"{sim * 100:.1f}%"
@@ -1009,6 +1076,7 @@ class CompareWindow(QMainWindow):
         self._diff_count   = result.get("diff_count", 0)
         self._current_diff = 0
         self._update_diff_nav()
+        self._rerender_browsers()
 
     def _update_diff_nav(self):
         has = self._diff_count > 0
@@ -1047,6 +1115,7 @@ class CompareWindow(QMainWindow):
             except TypeError:
                 pass
         self._set_busy(False)
+        self._selected_block = -1
         self.stack.setCurrentIndex(0)
         self.drop_left.reset()
         self.drop_right.reset()
@@ -1079,7 +1148,8 @@ class CompareWindow(QMainWindow):
             return
         try:
             content = export_html_report(
-                self._result["path1"], self._result["path2"], self._result
+                self._result["path1"], self._result["path2"], self._result,
+                padding_y=self._padding_y,
             )
             with open(path, "w", encoding="utf-8") as f:
                 f.write(content)
