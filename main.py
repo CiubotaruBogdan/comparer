@@ -15,7 +15,6 @@ from typing import Optional
 from docx import Document as DocxDocument
 from docx.oxml.ns import qn
 from docx.text.paragraph import Paragraph as DocxParagraph
-from docx.table import Table as DocxTable
 import fitz  # PyMuPDF
 
 if sys.platform == "win32":
@@ -26,8 +25,9 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QTextBrowser, QSplitter, QFrame,
     QFileDialog, QStackedWidget, QMessageBox, QSizePolicy, QProgressBar,
+    QShortcut,
 )
-from PyQt5.QtCore import Qt, pyqtSignal, QThread, pyqtSlot, QShortcut
+from PyQt5.QtCore import Qt, pyqtSignal, QThread, pyqtSlot
 from PyQt5.QtGui import QFont, QColor, QPalette, QIcon, QKeySequence
 
 
@@ -51,52 +51,33 @@ def _load_icon() -> QIcon:
 # 1. Document Readers
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _iter_docx_body(doc: DocxDocument):
-    """Iterează paragrafele și tabelele din corpul documentului în ordinea originală."""
-    for child in doc.element.body.iterchildren():
-        tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
-        if tag == "p":
-            yield DocxParagraph(child, doc)
-        elif tag == "tbl":
-            yield DocxTable(child, doc)
-
-
-def _extract_table_texts(table: DocxTable, seen_cells: set) -> list:
+def _iter_block_texts(element, doc: DocxDocument) -> list:
     """
-    Extrage text din celule în ordine, evitând celulele îmbinate duplicate
-    și procesând recursiv tabelele imbricate.
+    Extrage textul paragrafelor și tabelelor dintr-un element (corp document
+    sau celulă) în ordinea originală, recursiv pentru tabele imbricate.
+
+    Iterăm direct elementele XML brute <w:p> și <w:tbl>. Pentru tabele
+    parcurgem <w:tc> nemijlocit: fiecare celulă apare o singură dată în XML
+    (merge-ul orizontal e un singur <w:tc> cu gridSpan, iar continuările
+    verticale sunt celule goale, ignorate de filtrul de text gol).
     """
     texts = []
-    for row in table.rows:
-        for cell in row.cells:
-            cell_key = id(cell._tc)
-            if cell_key in seen_cells:
-                continue
-            seen_cells.add(cell_key)
-            for child in cell._tc.iterchildren():
-                tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
-                if tag == "p":
-                    para = DocxParagraph(child, cell)
-                    text = para.text.strip()
-                    if text:
-                        texts.append(text)
-                elif tag == "tbl":
-                    texts.extend(_extract_table_texts(DocxTable(child, cell), seen_cells))
+    for child in element.iterchildren():
+        tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+        if tag == "p":
+            text = DocxParagraph(child, doc).text.strip()
+            if text:
+                texts.append(text)
+        elif tag == "tbl":
+            for tr in child.findall(qn("w:tr")):
+                for tc in tr.findall(qn("w:tc")):
+                    texts.extend(_iter_block_texts(tc, doc))
     return texts
 
 
 def read_docx(path: str) -> list:
     doc = DocxDocument(path)
-    paragraphs = []
-    seen_cells: set = set()
-    for block in _iter_docx_body(doc):
-        if isinstance(block, DocxParagraph):
-            text = block.text.strip()
-            if text:
-                paragraphs.append(text)
-        elif isinstance(block, DocxTable):
-            paragraphs.extend(_extract_table_texts(block, seen_cells))
-    return paragraphs
+    return _iter_block_texts(doc.element.body, doc)
 
 
 def read_pdf(path: str) -> list:

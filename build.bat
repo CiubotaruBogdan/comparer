@@ -1,6 +1,6 @@
 @echo off
 echo ============================================
-echo  Document Comparator — PyInstaller Build
+echo  Document Comparator - PyInstaller Build
 echo ============================================
 echo.
 
