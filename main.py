@@ -23,23 +23,21 @@ if sys.platform == "win32":
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QPushButton, QTextBrowser, QSplitter, QFrame,
+    QLabel, QPushButton, QSplitter, QFrame,
     QFileDialog, QStackedWidget, QMessageBox, QSizePolicy, QProgressBar,
-    QShortcut, QSpinBox,
+    QShortcut, QScrollArea,
 )
-from PyQt5.QtCore import Qt, pyqtSignal, QThread, pyqtSlot
+from PyQt5.QtCore import Qt, pyqtSignal, QThread, pyqtSlot, QTimer
 from PyQt5.QtGui import QFont, QColor, QPalette, QIcon, QKeySequence
 
 
 def _resource(relative: str) -> Path:
-    """Returneaza calea corecta atat in dev cat si in executabilul PyInstaller."""
     if hasattr(sys, "_MEIPASS"):
         return Path(sys._MEIPASS) / relative
     return Path(__file__).parent / relative
 
 
 def _load_icon() -> QIcon:
-    """Incarca iconita preferand .png (alpha corect) fata de .ico."""
     for name in ("icon.png", "icon.ico"):
         p = _resource(name)
         if p.exists():
@@ -52,15 +50,6 @@ def _load_icon() -> QIcon:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _iter_block_texts(element, doc: DocxDocument) -> list:
-    """
-    Extrage textul paragrafelor și tabelelor dintr-un element (corp document
-    sau celulă) în ordinea originală, recursiv pentru tabele imbricate.
-
-    Iterăm direct elementele XML brute <w:p> și <w:tbl>. Pentru tabele
-    parcurgem <w:tc> nemijlocit: fiecare celulă apare o singură dată în XML
-    (merge-ul orizontal e un singur <w:tc> cu gridSpan, iar continuările
-    verticale sunt celule goale, ignorate de filtrul de text gol).
-    """
     texts = []
     for child in element.iterchildren():
         tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
@@ -109,7 +98,6 @@ def read_document(path: str) -> list:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def word_level_diff(text1: str, text2: str):
-    """Returnează (html_stânga, html_dreapta) cu diferențe la nivel de cuvânt."""
     words1 = text1.split()
     words2 = text2.split()
     matcher = difflib.SequenceMatcher(None, words1, words2, autojunk=False)
@@ -202,7 +190,6 @@ def compare_documents(paras1: list, paras2: list) -> dict:
                 right_blocks.append(("insert", paras2[j1 + k], False))
                 stats["added"] += 1
 
-    # Pozițiile de start ale fiecărui grup consecutiv de diferențe (pentru navigare)
     diff_positions = []
     in_diff = False
     for i in range(len(left_blocks)):
@@ -228,24 +215,21 @@ def render_html(
     side: str,
     diff_positions: list = None,
     padding_y: int = 7,
-    selected_block: int = -1,
-    interactive: bool = True,
+    interactive: bool = False,
 ) -> str:
+    """Generates HTML for export reports only."""
     STYLE = {
-        "equal":       ("#FFFFFF", "#E0E0E0", "3px solid",  ""),
-        "replace":     ("#FFECB3", "#FFB300", "3px solid",  ""),
-        "delete":      ("#FFCDD2", "#E53935", "3px solid",  ""),
-        "insert":      ("#C8E6C9", "#43A047", "3px solid",  ""),
-        "placeholder": ("#F9F9F9", "#EEEEEE", "3px dotted", ""),
+        "equal":       ("#FFFFFF", "#E0E0E0", "3px solid"),
+        "replace":     ("#FFECB3", "#FFB300", "3px solid"),
+        "delete":      ("#FFCDD2", "#E53935", "3px solid"),
+        "insert":      ("#C8E6C9", "#43A047", "3px solid"),
+        "placeholder": ("#F9F9F9", "#EEEEEE", "3px dotted"),
     }
-
     BADGE = {
-        "delete": ('<span style="float:right;font-size:9px;letter-spacing:.5px;'
-                   'background:#E53935;color:#fff;padding:1px 6px;border-radius:2px;'
-                   'margin-left:8px;font-family:inherit;">ȘTERS</span>'),
-        "insert": ('<span style="float:right;font-size:9px;letter-spacing:.5px;'
-                   'background:#43A047;color:#fff;padding:1px 6px;border-radius:2px;'
-                   'margin-left:8px;font-family:inherit;">NOU</span>'),
+        "delete": ('<span style="font-size:9px;background:#E53935;color:#fff;'
+                   'padding:1px 6px;border-radius:2px;margin-right:6px;">STERS</span>'),
+        "insert": ('<span style="font-size:9px;background:#43A047;color:#fff;'
+                   'padding:1px 6px;border-radius:2px;margin-right:6px;">NOU</span>'),
     }
 
     anchor_map: dict = {}
@@ -261,11 +245,7 @@ def render_html(
     ]
 
     for block_idx, (status, content, is_html) in enumerate(blocks):
-        bg, bl_color, bl_width, extra_style = STYLE.get(status, STYLE["equal"])
-
-        if block_idx == selected_block and status != "placeholder":
-            bg = "#EBEBEB"
-            bl_color = "#888888"
+        bg, bl_color, bl_width = STYLE.get(status, STYLE["equal"])
 
         anchor = ""
         if block_idx in anchor_map:
@@ -284,15 +264,9 @@ def render_html(
         else:
             inner = f"{badge}<span>{html_lib.escape(content)}</span>"
 
-        if interactive and status != "placeholder":
-            inner = (f'<a href="sel:{block_idx}" '
-                     f'style="text-decoration:none;color:inherit;">{inner}</a>')
-
         body = f"{anchor}{inner}"
-
         lines.append(
-            f'<div style="background:{bg};'
-            f'border-left:{bl_width} {bl_color};'
+            f'<div style="background:{bg};border-left:{bl_width} {bl_color};'
             f'margin:2px 0;padding:{padding_y}px 10px;'
             f'border-radius:0 2px 2px 0;min-height:22px;overflow:hidden;">'
             f'{body}</div>'
@@ -302,16 +276,13 @@ def render_html(
     return "\n".join(lines)
 
 
-def export_html_report(path1: str, path2: str, result: dict, padding_y: int = 7) -> str:
+def export_html_report(path1: str, path2: str, result: dict) -> str:
     sim   = result["similarity"]
     stats = result["stats"]
     n1 = html_lib.escape(Path(path1).name)
     n2 = html_lib.escape(Path(path2).name)
-    # Generăm HTML fără link-uri interactive și fără selecție
-    export_l = render_html(result["left_blocks"],  "left",  result["diff_positions"],
-                           padding_y=padding_y, interactive=False)
-    export_r = render_html(result["right_blocks"], "right", result["diff_positions"],
-                           padding_y=padding_y, interactive=False)
+    export_l = render_html(result["left_blocks"],  "left",  result["diff_positions"])
+    export_r = render_html(result["right_blocks"], "right", result["diff_positions"])
     body_l = export_l.split("<body", 1)[1].split(">", 1)[1].rsplit("</body>", 1)[0]
     body_r = export_r.split("<body", 1)[1].split(">", 1)[1].rsplit("</body>", 1)[0]
 
@@ -341,7 +312,7 @@ def export_html_report(path1: str, path2: str, result: dict, padding_y: int = 7)
 <body>
 <div class="hdr">
   <h1>Raport Comparatie Documente</h1>
-  <p>{n1} &nbsp;⟷&nbsp; {n2}</p>
+  <p>{n1} &nbsp;&#x27F7;&nbsp; {n2}</p>
 </div>
 <div class="stats">
   <div class="stat"><div class="sim">{sim*100:.1f}%</div><div class="lbl">SIMILARITATE</div></div>
@@ -496,7 +467,6 @@ class DropZone(QFrame):
             self._set_file(path)
 
     def _set_file_display(self, path: str):
-        """Actualizează UI-ul fără a emite semnalul file_loaded (folosit la swap)."""
         self.file_path = path
         self._last_dir = str(Path(path).parent)
         self.hint_lbl.setText("incarcat")
@@ -540,7 +510,166 @@ class DropZone(QFrame):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 5. Fereastra principala
+# 5. ParagraphBlock + ComparePanel
+# ══════════════════════════════════════════════════════════════════════════════
+
+class ParagraphBlock(QFrame):
+    """Single paragraph block rendered as a native Qt widget."""
+    clicked = pyqtSignal(int)
+
+    _BG = {
+        "equal":       "#FFFFFF",
+        "replace":     "#FFECB3",
+        "delete":      "#FFCDD2",
+        "insert":      "#C8E6C9",
+        "placeholder": "#F9F9F9",
+    }
+    _BORDER_COLOR = {
+        "equal":       "#E0E0E0",
+        "replace":     "#FFB300",
+        "delete":      "#E53935",
+        "insert":      "#43A047",
+        "placeholder": "#EEEEEE",
+    }
+    _BORDER_STYLE = {
+        "placeholder": "3px dotted",
+    }
+
+    def __init__(self, idx: int, status: str, content: str, is_html: bool,
+                 side: str, parent=None):
+        super().__init__(parent)
+        self._idx    = idx
+        self._status = status
+        self._sel    = False
+        self._bg     = self._BG.get(status, "#FFFFFF")
+        self._bc     = self._BORDER_COLOR.get(status, "#E0E0E0")
+        self._bs     = self._BORDER_STYLE.get(status, "3px solid")
+
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.setFrameShape(QFrame.NoFrame)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(10, 7, 10, 7)
+        lay.setSpacing(0)
+
+        self.lbl = QLabel()
+        self.lbl.setWordWrap(True)
+        self.lbl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self.lbl.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        self.lbl.setTextFormat(Qt.RichText)
+        f = QFont()
+        f.setPointSize(10)
+        self.lbl.setFont(f)
+
+        if status != "placeholder":
+            badge = ""
+            if status == "delete" and side == "left":
+                badge = (
+                    '<span style="font-size:8px;background:#E53935;color:#fff;'
+                    'padding:1px 5px;border-radius:2px;margin-right:6px;">STERS</span> '
+                )
+            elif status == "insert" and side == "right":
+                badge = (
+                    '<span style="font-size:8px;background:#43A047;color:#fff;'
+                    'padding:1px 5px;border-radius:2px;margin-right:6px;">NOU</span> '
+                )
+            text = content if is_html else html_lib.escape(content)
+            self.lbl.setText(badge + text)
+
+        lay.addWidget(self.lbl)
+        self._apply_style()
+
+        if status != "placeholder":
+            self.setCursor(Qt.PointingHandCursor)
+
+    def _apply_style(self):
+        bg = "#EBEBEB" if self._sel else self._bg
+        bc = "#888888" if self._sel else self._bc
+        self.setStyleSheet(
+            f"ParagraphBlock {{ background:{bg}; "
+            f"border-left:{self._bs} {bc}; "
+            f"border-top:none; border-right:none; border-bottom:none; "
+            f"margin:1px 0; }}"
+        )
+
+    def set_selected(self, sel: bool):
+        if self._sel != sel:
+            self._sel = sel
+            self._apply_style()
+
+    def preferred_height(self, vp_width: int) -> int:
+        # vp_width = panel viewport width; subtract container margins (6+6) and block margins (10+10)
+        label_w = max(20, vp_width - 32)
+        h = self.lbl.heightForWidth(label_w)
+        if h <= 0:
+            h = self.lbl.sizeHint().height()
+        m = self.layout().contentsMargins()
+        return max(h + m.top() + m.bottom() + 2, 32)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton and self._status != "placeholder":
+            self.clicked.emit(self._idx)
+        super().mousePressEvent(event)
+
+
+class ComparePanel(QScrollArea):
+    """Scrollable panel containing ParagraphBlock widgets."""
+    block_clicked = pyqtSignal(int)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWidgetResizable(True)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.setStyleSheet("QScrollArea { border:none; background:#FAFAFA; }")
+
+        self._container = QWidget()
+        self._container.setStyleSheet("background:#FAFAFA;")
+        self._vbox = QVBoxLayout(self._container)
+        self._vbox.setContentsMargins(6, 6, 6, 6)
+        self._vbox.setSpacing(2)
+        self._vbox.addStretch()
+        self.setWidget(self._container)
+
+        self._blocks: list = []
+        self._sel_idx = -1
+
+    def load_blocks(self, blocks: list, side: str, diff_positions: list):
+        while self._vbox.count():
+            item = self._vbox.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        self._blocks = []
+        self._sel_idx = -1
+
+        for idx, (status, content, is_html) in enumerate(blocks):
+            block = ParagraphBlock(idx, status, content, is_html, side)
+            block.clicked.connect(self.block_clicked)
+            self._blocks.append(block)
+            self._vbox.addWidget(block)
+
+        self._vbox.addStretch()
+
+    def set_selected(self, idx: int):
+        if 0 <= self._sel_idx < len(self._blocks):
+            self._blocks[self._sel_idx].set_selected(False)
+        self._sel_idx = idx
+        if 0 <= idx < len(self._blocks):
+            self._blocks[idx].set_selected(True)
+
+    def scroll_to_block(self, idx: int):
+        if 0 <= idx < len(self._blocks):
+            block = self._blocks[idx]
+            y = block.pos().y()
+            self.verticalScrollBar().setValue(max(0, y - 10))
+
+    def get_blocks(self) -> list:
+        return self._blocks
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 6. Fereastra principala
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _flat_btn(text: str, dark: bool = False) -> QPushButton:
@@ -579,13 +708,16 @@ class CompareWindow(QMainWindow):
         self.setWindowTitle("Comparer")
         self.setMinimumSize(1100, 680)
         self.setWindowIcon(_load_icon())
-        self._syncing        = False
+        self._syncing      = False
         self._result: Optional[dict] = None
         self._worker: Optional[CompareWorker] = None
-        self._current_diff   = 0
-        self._diff_count     = 0
-        self._padding_y      = 7
-        self._selected_block = -1
+        self._current_diff = 0
+        self._diff_count   = 0
+        self._sel_idx      = -1
+        self._equalize_timer = QTimer()
+        self._equalize_timer.setSingleShot(True)
+        self._equalize_timer.setInterval(80)
+        self._equalize_timer.timeout.connect(self._equalize_panel_heights)
         self._setup_ui()
         self._setup_shortcuts()
 
@@ -650,7 +782,6 @@ class CompareWindow(QMainWindow):
         center_layout.addLayout(zones)
         center_layout.addSpacing(16)
 
-        # Bara de progres indeterminată (ascunsă în mod normal)
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 0)
         self.progress_bar.setFixedHeight(3)
@@ -714,9 +845,12 @@ class CompareWindow(QMainWindow):
         self.splitter.setStyleSheet(
             "QSplitter::handle { background:#DDDDDD; width:1px; }"
         )
+        self.splitter.splitterMoved.connect(
+            lambda pos, idx: self._equalize_timer.start()
+        )
 
-        left_panel = QWidget()
-        ll = QVBoxLayout(left_panel)
+        left_panel_w = QWidget()
+        ll = QVBoxLayout(left_panel_w)
         ll.setContentsMargins(0, 0, 0, 0)
         ll.setSpacing(0)
         self.left_hdr = QLabel("  Document 1")
@@ -726,14 +860,12 @@ class CompareWindow(QMainWindow):
             "font-family:system-ui,Arial,sans-serif;"
         )
         self.left_hdr.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
-        self.left_browser = QTextBrowser()
-        self.left_browser.setOpenLinks(False)
-        self.left_browser.setStyleSheet("border:none; background:#fff;")
+        self.left_panel = ComparePanel()
         ll.addWidget(self.left_hdr)
-        ll.addWidget(self.left_browser)
+        ll.addWidget(self.left_panel)
 
-        right_panel = QWidget()
-        rl = QVBoxLayout(right_panel)
+        right_panel_w = QWidget()
+        rl = QVBoxLayout(right_panel_w)
         rl.setContentsMargins(0, 0, 0, 0)
         rl.setSpacing(0)
         self.right_hdr = QLabel("  Document 2")
@@ -743,23 +875,21 @@ class CompareWindow(QMainWindow):
             "font-family:system-ui,Arial,sans-serif;"
         )
         self.right_hdr.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
-        self.right_browser = QTextBrowser()
-        self.right_browser.setOpenLinks(False)
-        self.right_browser.setStyleSheet("border:none; background:#fff;")
+        self.right_panel = ComparePanel()
         rl.addWidget(self.right_hdr)
-        rl.addWidget(self.right_browser)
+        rl.addWidget(self.right_panel)
 
-        self.splitter.addWidget(left_panel)
-        self.splitter.addWidget(right_panel)
+        self.splitter.addWidget(left_panel_w)
+        self.splitter.addWidget(right_panel_w)
         self.splitter.setSizes([500, 500])
         layout.addWidget(self.splitter, 1)
 
         layout.addWidget(self._build_stats_panel())
 
-        self.left_browser.verticalScrollBar().valueChanged.connect(self._sync_l2r)
-        self.right_browser.verticalScrollBar().valueChanged.connect(self._sync_r2l)
-        self.left_browser.anchorClicked.connect(self._on_anchor_clicked)
-        self.right_browser.anchorClicked.connect(self._on_anchor_clicked)
+        self.left_panel.block_clicked.connect(self._on_block_clicked)
+        self.right_panel.block_clicked.connect(self._on_block_clicked)
+        self.left_panel.verticalScrollBar().valueChanged.connect(self._sync_l2r)
+        self.right_panel.verticalScrollBar().valueChanged.connect(self._sync_r2l)
 
         return page
 
@@ -779,7 +909,6 @@ class CompareWindow(QMainWindow):
         self.swap_btn.clicked.connect(self._swap_and_recompare)
         self.export_btn.clicked.connect(self._export_report)
 
-        # Navigare diferențe
         self.prev_diff_btn = _flat_btn("‹ Diff")
         self.next_diff_btn = _flat_btn("Diff ›")
         self.diff_counter_lbl = QLabel("—")
@@ -831,26 +960,6 @@ class CompareWindow(QMainWindow):
         lay.addStretch()
         lay.addWidget(self.right_name_lbl)
         lay.addSpacing(12)
-
-        # Control spațiere paragrafe
-        spacing_lbl = QLabel("Spat.")
-        spacing_lbl.setFont(f)
-        spacing_lbl.setStyleSheet("color:#999;")
-        self.spacing_spin = QSpinBox()
-        self.spacing_spin.setRange(2, 24)
-        self.spacing_spin.setValue(self._padding_y)
-        self.spacing_spin.setSuffix(" px")
-        self.spacing_spin.setFixedWidth(62)
-        self.spacing_spin.setStyleSheet(
-            "QSpinBox { border:1px solid #CCC; border-radius:4px; padding:2px 4px; "
-            "background:#fff; color:#111; font-size:9pt; }"
-            "QSpinBox::up-button, QSpinBox::down-button { width:14px; }"
-        )
-        self.spacing_spin.valueChanged.connect(self._on_spacing_changed)
-
-        lay.addWidget(spacing_lbl)
-        lay.addWidget(self.spacing_spin)
-        lay.addSpacing(8)
         lay.addWidget(self.export_btn)
 
         return bar
@@ -972,7 +1081,6 @@ class CompareWindow(QMainWindow):
         self.compare_btn.setEnabled(bool(both))
 
     def _set_busy(self, busy: bool):
-        """Activează/dezactivează starea de procesare în ambele pagini."""
         self.compare_btn.setEnabled(not busy and bool(
             self.drop_left.file_path and self.drop_right.file_path
         ))
@@ -990,7 +1098,6 @@ class CompareWindow(QMainWindow):
         if not p1 or not p2:
             return
 
-        # Deconectăm worker-ul anterior dacă încă rulează
         if self._worker and self._worker.isRunning():
             try:
                 self._worker.finished.disconnect()
@@ -1019,40 +1126,29 @@ class CompareWindow(QMainWindow):
         self._set_busy(False)
         QMessageBox.critical(self, "Eroare", msg)
 
-    def _rerender_browsers(self):
-        if not self._result:
-            return
-        lv = self.left_browser.verticalScrollBar().value()
-        rv = self.right_browser.verticalScrollBar().value()
-        html_l = render_html(
-            self._result["left_blocks"], "left", self._result["diff_positions"],
-            self._padding_y, self._selected_block,
-        )
-        html_r = render_html(
-            self._result["right_blocks"], "right", self._result["diff_positions"],
-            self._padding_y, self._selected_block,
-        )
-        self._syncing = True
-        self.left_browser.setHtml(html_l)
-        self.right_browser.setHtml(html_r)
-        self._syncing = False
-        self.left_browser.verticalScrollBar().setValue(lv)
-        self.right_browser.verticalScrollBar().setValue(rv)
+    def _on_block_clicked(self, idx: int):
+        new_sel = -1 if self._sel_idx == idx else idx
+        self._sel_idx = new_sel
+        self.left_panel.set_selected(new_sel)
+        self.right_panel.set_selected(new_sel)
 
-    def _on_anchor_clicked(self, url):
-        s = url.toString()
-        if not s.startswith("sel:"):
+    def _equalize_panel_heights(self):
+        lb = self.left_panel.get_blocks()
+        rb = self.right_panel.get_blocks()
+        if not lb:
             return
-        idx = int(s.split(":")[1])
-        self._selected_block = -1 if self._selected_block == idx else idx
-        self._rerender_browsers()
-
-    def _on_spacing_changed(self, value: int):
-        self._padding_y = value
-        self._rerender_browsers()
+        lw = self.left_panel.viewport().width()
+        rw = self.right_panel.viewport().width()
+        n = min(len(lb), len(rb))
+        for i in range(n):
+            lh = lb[i].preferred_height(lw)
+            rh = rb[i].preferred_height(rw)
+            target = max(lh, rh)
+            lb[i].setFixedHeight(target)
+            rb[i].setFixedHeight(target)
 
     def _update_compare_page(self, result: dict):
-        self._selected_block = -1
+        self._sel_idx = -1
         sim    = result["similarity"]
         stats  = result["stats"]
         sim_pct = f"{sim * 100:.1f}%"
@@ -1076,7 +1172,14 @@ class CompareWindow(QMainWindow):
         self._diff_count   = result.get("diff_count", 0)
         self._current_diff = 0
         self._update_diff_nav()
-        self._rerender_browsers()
+
+        self.left_panel.load_blocks(
+            result["left_blocks"], "left", result["diff_positions"]
+        )
+        self.right_panel.load_blocks(
+            result["right_blocks"], "right", result["diff_positions"]
+        )
+        QTimer.singleShot(60, self._equalize_panel_heights)
 
     def _update_diff_nav(self):
         has = self._diff_count > 0
@@ -1090,10 +1193,10 @@ class CompareWindow(QMainWindow):
         if not self._diff_count:
             return
         self._current_diff = max(0, min(idx, self._diff_count - 1))
-        anchor = f"diff-{self._current_diff}"
+        block_idx = self._result["diff_positions"][self._current_diff]
         self._syncing = True
-        self.left_browser.scrollToAnchor(anchor)
-        self.right_browser.scrollToAnchor(anchor)
+        self.left_panel.scroll_to_block(block_idx)
+        self.right_panel.scroll_to_block(block_idx)
         self._syncing = False
         self._update_diff_nav()
 
@@ -1115,7 +1218,7 @@ class CompareWindow(QMainWindow):
             except TypeError:
                 pass
         self._set_busy(False)
-        self._selected_block = -1
+        self._sel_idx = -1
         self.stack.setCurrentIndex(0)
         self.drop_left.reset()
         self.drop_right.reset()
@@ -1127,7 +1230,6 @@ class CompareWindow(QMainWindow):
             return
         p1 = self._result["path1"]
         p2 = self._result["path2"]
-        # Actualizăm vizualul DropZone-urilor fără a emite semnale
         self.drop_left._set_file_display(p2)
         self.drop_right._set_file_display(p1)
         self._run_comparison(p2, p1)
@@ -1149,7 +1251,6 @@ class CompareWindow(QMainWindow):
         try:
             content = export_html_report(
                 self._result["path1"], self._result["path2"], self._result,
-                padding_y=self._padding_y,
             )
             with open(path, "w", encoding="utf-8") as f:
                 f.write(content)
@@ -1160,18 +1261,23 @@ class CompareWindow(QMainWindow):
     def _sync_l2r(self, value: int):
         if not self._syncing:
             self._syncing = True
-            self.right_browser.verticalScrollBar().setValue(value)
+            self.right_panel.verticalScrollBar().setValue(value)
             self._syncing = False
 
     def _sync_r2l(self, value: int):
         if not self._syncing:
             self._syncing = True
-            self.left_browser.verticalScrollBar().setValue(value)
+            self.left_panel.verticalScrollBar().setValue(value)
             self._syncing = False
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._result and self.stack.currentIndex() == 1:
+            self._equalize_timer.start()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 6. Entry point
+# 7. Entry point
 # ══════════════════════════════════════════════════════════════════════════════
 
 def main():
