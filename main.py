@@ -583,23 +583,54 @@ class DropZone(QFrame):
         f.setPointSize(10)
         f.setWeight(QFont.DemiBold)
         self.title_lbl.setFont(f)
-        self.title_lbl.setStyleSheet("color:#111;")
+        self.title_lbl.setStyleSheet("color:#111; background:transparent;")
 
         self.hint_lbl = QLabel("drag & drop  sau  click pentru a selecta")
         self.hint_lbl.setAlignment(Qt.AlignCenter)
         f2 = QFont()
         f2.setPointSize(8)
         self.hint_lbl.setFont(f2)
-        self.hint_lbl.setStyleSheet("color:#BBB;")
+        self.hint_lbl.setStyleSheet("color:#BBB; background:transparent;")
 
         self.file_lbl = QLabel("")
         self.file_lbl.setAlignment(Qt.AlignCenter)
         f3 = QFont()
         f3.setPointSize(9)
         self.file_lbl.setFont(f3)
-        self.file_lbl.setStyleSheet("color:#333;")
+        self.file_lbl.setStyleSheet("color:#333; background:transparent;")
         self.file_lbl.setWordWrap(True)
 
+        # Clear button (X) — hidden until a file is loaded
+        self.clear_btn = QPushButton("\u2715")
+        self.clear_btn.setFixedSize(22, 22)
+        self.clear_btn.setCursor(Qt.PointingHandCursor)
+        self.clear_btn.setStyleSheet("""
+            QPushButton {
+                background: transparent;
+                border: none;
+                color: #999;
+                font-size: 14px;
+                font-weight: bold;
+                border-radius: 11px;
+            }
+            QPushButton:hover {
+                background: #E0E0E0;
+                color: #333;
+            }
+            QPushButton:pressed {
+                background: #CCC;
+            }
+        """)
+        self.clear_btn.hide()
+        self.clear_btn.clicked.connect(self._clear_file)
+
+        # Top row with clear button in top-right corner
+        top_row = QHBoxLayout()
+        top_row.setContentsMargins(0, 0, 0, 0)
+        top_row.addStretch()
+        top_row.addWidget(self.clear_btn)
+
+        layout.addLayout(top_row)
         layout.addWidget(self.title_lbl)
         layout.addSpacing(2)
         layout.addWidget(self.hint_lbl)
@@ -613,6 +644,9 @@ class DropZone(QFrame):
                     border-radius: 6px;
                     background: #fff;
                 }
+                DropZone QLabel {
+                    background: transparent;
+                }
             """)
         else:
             self.setStyleSheet("""
@@ -624,6 +658,9 @@ class DropZone(QFrame):
                 DropZone:hover {
                     border-color: #555;
                     background: #F4F4F4;
+                }
+                DropZone QLabel {
+                    background: transparent;
                 }
             """)
 
@@ -639,12 +676,18 @@ class DropZone(QFrame):
         if path:
             self._set_file(path)
 
+    def _clear_file(self):
+        """Clear the loaded file and reset the DropZone."""
+        self.reset()
+        self.file_loaded.emit("")  # Signal with empty path to update button state
+
     def _set_file_display(self, path: str):
         self.file_path = path
         self._last_dir = str(Path(path).parent)
         self.hint_lbl.setText("incarcat")
-        self.hint_lbl.setStyleSheet("color:#AAA;")
+        self.hint_lbl.setStyleSheet("color:#AAA; background:transparent;")
         self.file_lbl.setText(Path(path).name)
+        self.clear_btn.show()
         self._apply_style(True)
 
     def _set_file(self, path: str):
@@ -662,6 +705,9 @@ class DropZone(QFrame):
                         border-radius: 6px;
                         background: #EFEFEF;
                     }
+                    DropZone QLabel {
+                        background: transparent;
+                    }
                 """)
 
     def dragLeaveEvent(self, event):
@@ -677,8 +723,9 @@ class DropZone(QFrame):
     def reset(self):
         self.file_path = None
         self.hint_lbl.setText("drag & drop  sau  click pentru a selecta")
-        self.hint_lbl.setStyleSheet("color:#BBB;")
+        self.hint_lbl.setStyleSheet("color:#BBB; background:transparent;")
         self.file_lbl.setText("")
+        self.clear_btn.hide()
         self._apply_style(False)
 
 
@@ -1349,6 +1396,9 @@ class CompareWindow(QMainWindow):
             else:
                 self.status_lbl.setText("")
                 self.status_lbl.setStyleSheet("color:#888;")
+        else:
+            self.status_lbl.setText("")
+            self.status_lbl.setStyleSheet("color:#888;")
 
     def _set_busy(self, busy: bool):
         self.compare_btn.setEnabled(not busy and bool(
