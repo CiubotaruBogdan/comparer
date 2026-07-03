@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Document Comparator v1.2
+Document Comparator v1.3
 Compară documente la nivel de paragraf (PDF cu PDF, DOCX cu DOCX),
 cu highlighting al diferențelor, statistici detaliate,
-și includere header/footer în comparația DOCX.
+export PDF/HTML, și vizualizare optimizată pentru documente mari.
 """
 
 import sys
@@ -12,6 +12,7 @@ import difflib
 import html as html_lib
 from pathlib import Path
 from typing import Optional
+from datetime import datetime
 
 from docx import Document as DocxDocument
 from docx.oxml.ns import qn
@@ -20,16 +21,25 @@ import fitz  # PyMuPDF
 
 if sys.platform == "win32":
     import ctypes
-    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Comparer.1.1")
+    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Comparer.1.3")
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QSplitter, QFrame,
     QFileDialog, QStackedWidget, QMessageBox, QSizePolicy, QProgressBar,
-    QShortcut, QScrollArea,
+    QShortcut, QScrollArea, QAbstractScrollArea, QStyleOptionViewItem,
+    QStyledItemDelegate, QListView,
 )
-from PyQt5.QtCore import Qt, pyqtSignal, QThread, pyqtSlot, QTimer
-from PyQt5.QtGui import QFont, QColor, QPalette, QIcon, QKeySequence
+from PyQt5.QtCore import (
+    Qt, pyqtSignal, QThread, pyqtSlot, QTimer, QAbstractListModel,
+    QModelIndex, QSize, QRect, QPoint, QRectF,
+)
+from PyQt5.QtGui import (
+    QFont, QColor, QPalette, QIcon, QKeySequence, QPainter,
+    QTextDocument, QAbstractTextDocumentLayout, QPen, QBrush,
+    QFontMetrics,
+)
+from PyQt5.QtPrintSupport import QPrinter
 
 
 def _resource(relative: str) -> Path:
@@ -395,6 +405,111 @@ def export_html_report(path1: str, path2: str, result: dict) -> str:
 </body></html>"""
 
 
+def export_pdf_report(path1: str, path2: str, result: dict) -> str:
+    """Generate HTML content optimized for PDF rendering via QPrinter."""
+    sim = result["similarity"]
+    stats = result["stats"]
+    n1 = html_lib.escape(Path(path1).name)
+    n2 = html_lib.escape(Path(path2).name)
+    now = datetime.now().strftime("%d.%m.%Y  %H:%M:%S")
+
+    # Build left/right block rows for the table
+    left_blocks = result["left_blocks"]
+    right_blocks = result["right_blocks"]
+
+    STYLE = {
+        "equal":       ("#FFFFFF", "#E0E0E0"),
+        "replace":     ("#FFECB3", "#FFB300"),
+        "delete":      ("#FFCDD2", "#E53935"),
+        "insert":      ("#C8E6C9", "#43A047"),
+        "placeholder": ("#F9F9F9", "#EEEEEE"),
+    }
+    BADGE = {
+        "delete": '<span style="font-size:8px;background:#E53935;color:#fff;padding:1px 4px;border-radius:2px;margin-right:4px;">STERS</span>',
+        "insert": '<span style="font-size:8px;background:#43A047;color:#fff;padding:1px 4px;border-radius:2px;margin-right:4px;">NOU</span>',
+    }
+
+    rows = []
+    for idx in range(len(left_blocks)):
+        l_status, l_content, l_is_html = left_blocks[idx]
+        r_status, r_content, r_is_html = right_blocks[idx]
+
+        l_bg, l_bc = STYLE.get(l_status, STYLE["equal"])
+        r_bg, r_bc = STYLE.get(r_status, STYLE["equal"])
+
+        # Left cell content
+        l_badge = ""
+        if l_status == "delete":
+            l_badge = BADGE["delete"]
+        l_text = ""
+        if l_status != "placeholder":
+            l_text = l_content if l_is_html else html_lib.escape(l_content)
+
+        # Right cell content
+        r_badge = ""
+        if r_status == "insert":
+            r_badge = BADGE["insert"]
+        r_text = ""
+        if r_status != "placeholder":
+            r_text = r_content if r_is_html else html_lib.escape(r_content)
+
+        rows.append(
+            f'<tr>'
+            f'<td style="background:{l_bg};border-left:3px solid {l_bc};padding:4px 6px;'
+            f'vertical-align:top;width:50%;font-size:9px;line-height:1.4;">'
+            f'{l_badge}{l_text}</td>'
+            f'<td style="background:{r_bg};border-left:3px solid {r_bc};padding:4px 6px;'
+            f'vertical-align:top;width:50%;font-size:9px;line-height:1.4;">'
+            f'{r_badge}{r_text}</td>'
+            f'</tr>'
+        )
+
+    table_rows = "\n".join(rows)
+
+    return f"""<!DOCTYPE html>
+<html lang="ro">
+<head>
+<meta charset="utf-8">
+<style>
+  * {{ box-sizing:border-box; margin:0; padding:0; }}
+  body {{ font-family: Arial, sans-serif; font-size:10px; color:#111; }}
+  .title {{ font-size:16px; font-weight:bold; text-align:center; margin-top:12px; }}
+  .subtitle {{ font-size:10px; color:#555; text-align:center; margin-top:6px; margin-bottom:14px; }}
+  .stats-table {{ width:100%; border-collapse:collapse; margin-bottom:10px; }}
+  .stats-table td {{ padding:6px 10px; text-align:center; border:1px solid #ddd; }}
+  .stats-table .val {{ font-size:14px; font-weight:bold; }}
+  .stats-table .lbl {{ font-size:8px; color:#777; letter-spacing:0.5px; }}
+  .compare-table {{ width:100%; border-collapse:collapse; }}
+  .compare-table td {{ border-bottom:1px solid #eee; }}
+  .col-hdr {{ background:#222; color:#fff; padding:5px 8px; font-size:9px; font-weight:bold; }}
+</style>
+</head>
+<body>
+<div class="title">Documente comparate: {n1}, {n2}</div>
+<div class="subtitle">Data raport: {now}</div>
+
+<table class="stats-table">
+<tr>
+  <td><div class="val">{sim*100:.1f}%</div><div class="lbl">SIMILARITATE</div></td>
+  <td><div class="val">{stats["equal"]}</div><div class="lbl">IDENTICE</div></td>
+  <td><div class="val">{stats["modified"]}</div><div class="lbl">MODIFICATE</div></td>
+  <td><div class="val">{stats["added"]}</div><div class="lbl">ADAUGATE</div></td>
+  <td><div class="val">{stats["deleted"]}</div><div class="lbl">STERSE</div></td>
+  <td><div class="val">{stats["total_left"]}</div><div class="lbl">PAR. DOC 1</div></td>
+  <td><div class="val">{stats["total_right"]}</div><div class="lbl">PAR. DOC 2</div></td>
+</tr>
+</table>
+
+<table class="compare-table">
+<tr>
+  <td class="col-hdr" style="width:50%;">Document 1 — Baza: {n1}</td>
+  <td class="col-hdr" style="width:50%;">Document 2 — Comparatie: {n2}</td>
+</tr>
+{table_rows}
+</table>
+</body></html>"""
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # 3. Thread de lucru
 # ══════════════════════════════════════════════════════════════════════════════
@@ -568,162 +683,250 @@ class DropZone(QFrame):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 5. ParagraphBlock + ComparePanel
+# 5. Virtualized ComparePanel (memory-efficient for large documents)
 # ══════════════════════════════════════════════════════════════════════════════
 
-class ParagraphBlock(QFrame):
-    """Single paragraph block rendered as a native Qt widget."""
-    clicked = pyqtSignal(int)
+class BlockListModel(QAbstractListModel):
+    """
+    Model that holds block data (status, content, is_html, side) without
+    creating any widgets. Only raw data is stored — rendering is done by
+    the delegate on demand for visible items only.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._blocks: list = []   # list of (status, content, is_html)
+        self._side: str = "left"
+        self._selected_idx: int = -1
+
+    def set_data(self, blocks: list, side: str):
+        self.beginResetModel()
+        self._blocks = blocks
+        self._side = side
+        self._selected_idx = -1
+        self.endResetModel()
+
+    def rowCount(self, parent=QModelIndex()):
+        return len(self._blocks)
+
+    def data(self, index, role=Qt.DisplayRole):
+        if not index.isValid():
+            return None
+        row = index.row()
+        if row < 0 or row >= len(self._blocks):
+            return None
+
+        if role == Qt.UserRole:
+            # Return full block tuple + side + selected
+            status, content, is_html = self._blocks[row]
+            return (status, content, is_html, self._side, row == self._selected_idx)
+        return None
+
+    def set_selected(self, idx: int):
+        old = self._selected_idx
+        self._selected_idx = idx
+        if old >= 0 and old < len(self._blocks):
+            i = self.index(old)
+            self.dataChanged.emit(i, i, [Qt.UserRole])
+        if idx >= 0 and idx < len(self._blocks):
+            i = self.index(idx)
+            self.dataChanged.emit(i, i, [Qt.UserRole])
+
+    def block_count(self) -> int:
+        return len(self._blocks)
+
+
+class BlockDelegate(QStyledItemDelegate):
+    """
+    Custom delegate that paints paragraph blocks using QPainter directly.
+    No widgets are created — this is the key to memory efficiency.
+    Only visible items are rendered by the QListView viewport.
+    """
 
     _BG = {
-        "equal":       "#FFFFFF",
-        "replace":     "#FFECB3",
-        "delete":      "#FFCDD2",
-        "insert":      "#C8E6C9",
-        "placeholder": "#F9F9F9",
+        "equal":       QColor("#FFFFFF"),
+        "replace":     QColor("#FFECB3"),
+        "delete":      QColor("#FFCDD2"),
+        "insert":      QColor("#C8E6C9"),
+        "placeholder": QColor("#F9F9F9"),
     }
     _BORDER_COLOR = {
-        "equal":       "#E0E0E0",
-        "replace":     "#FFB300",
-        "delete":      "#E53935",
-        "insert":      "#43A047",
-        "placeholder": "#EEEEEE",
+        "equal":       QColor("#E0E0E0"),
+        "replace":     QColor("#FFB300"),
+        "delete":      QColor("#E53935"),
+        "insert":      QColor("#43A047"),
+        "placeholder": QColor("#EEEEEE"),
     }
-    _BORDER_STYLE = {
-        "placeholder": "3px dotted",
-    }
+    _SEL_BG = QColor("#EBEBEB")
+    _SEL_BORDER = QColor("#888888")
 
-    def __init__(self, idx: int, status: str, content: str, is_html: bool,
-                 side: str, parent=None):
+    def __init__(self, parent=None):
         super().__init__(parent)
-        self._idx    = idx
-        self._status = status
-        self._sel    = False
-        self._bg     = self._BG.get(status, "#FFFFFF")
-        self._bc     = self._BORDER_COLOR.get(status, "#E0E0E0")
-        self._bs     = self._BORDER_STYLE.get(status, "3px solid")
+        self._font = QFont()
+        self._font.setPointSize(10)
+        self._doc_cache = {}  # LRU-like cache for QTextDocument (limited size)
+        self._cache_max = 200  # max cached documents
 
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.setFrameShape(QFrame.NoFrame)
+    def _get_doc(self, html_content: str, width: int) -> QTextDocument:
+        """Get or create a QTextDocument for the given content and width."""
+        key = (html_content, width)
+        if key in self._doc_cache:
+            return self._doc_cache[key]
 
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(10, 7, 10, 7)
-        lay.setSpacing(0)
+        doc = QTextDocument()
+        doc.setDefaultFont(self._font)
+        doc.setTextWidth(width)
+        doc.setHtml(html_content)
 
-        self.lbl = QLabel()
-        self.lbl.setWordWrap(True)
-        self.lbl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        self.lbl.setAlignment(Qt.AlignTop | Qt.AlignLeft)
-        self.lbl.setTextFormat(Qt.RichText)
-        f = QFont()
-        f.setPointSize(10)
-        self.lbl.setFont(f)
+        # Evict oldest if cache full
+        if len(self._doc_cache) >= self._cache_max:
+            # Remove first item (oldest)
+            first_key = next(iter(self._doc_cache))
+            del self._doc_cache[first_key]
 
-        if status != "placeholder":
-            badge = ""
-            if status == "delete" and side == "left":
-                badge = (
-                    '<span style="font-size:8px;background:#E53935;color:#fff;'
-                    'padding:1px 5px;border-radius:2px;margin-right:6px;">STERS</span> '
-                )
-            elif status == "insert" and side == "right":
-                badge = (
-                    '<span style="font-size:8px;background:#43A047;color:#fff;'
-                    'padding:1px 5px;border-radius:2px;margin-right:6px;">NOU</span> '
-                )
-            text = content if is_html else html_lib.escape(content)
-            self.lbl.setText(badge + text)
+        self._doc_cache[key] = doc
+        return doc
 
-        lay.addWidget(self.lbl)
-        self._apply_style()
+    def _build_html(self, status: str, content: str, is_html: bool, side: str) -> str:
+        """Build the rich text HTML for a block."""
+        if status == "placeholder":
+            return ""
 
-        if status != "placeholder":
-            self.setCursor(Qt.PointingHandCursor)
+        badge = ""
+        if status == "delete" and side == "left":
+            badge = ('<span style="font-size:8px;background:#E53935;color:#fff;'
+                     'padding:1px 5px;border-radius:2px;margin-right:6px;">STERS</span> ')
+        elif status == "insert" and side == "right":
+            badge = ('<span style="font-size:8px;background:#43A047;color:#fff;'
+                     'padding:1px 5px;border-radius:2px;margin-right:6px;">NOU</span> ')
 
-    def _apply_style(self):
-        bg = "#EBEBEB" if self._sel else self._bg
-        bc = "#888888" if self._sel else self._bc
-        self.setStyleSheet(
-            f"ParagraphBlock {{ background:{bg}; "
-            f"border-left:{self._bs} {bc}; "
-            f"border-top:none; border-right:none; border-bottom:none; "
-            f"margin:1px 0; }}"
-        )
+        text = content if is_html else html_lib.escape(content)
+        return badge + text
 
-    def set_selected(self, sel: bool):
-        if self._sel != sel:
-            self._sel = sel
-            self._apply_style()
+    def paint(self, painter: QPainter, option: QStyleOptionViewItem, index: QModelIndex):
+        data = index.data(Qt.UserRole)
+        if data is None:
+            return
 
-    def preferred_height(self, vp_width: int) -> int:
-        # vp_width = panel viewport width; subtract container margins (6+6) and block margins (10+10)
-        label_w = max(20, vp_width - 32)
-        h = self.lbl.heightForWidth(label_w)
-        if h <= 0:
-            h = self.lbl.sizeHint().height()
-        m = self.layout().contentsMargins()
-        return max(h + m.top() + m.bottom() + 2, 32)
+        status, content, is_html, side, selected = data
+        rect = option.rect
 
-    def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton and self._status != "placeholder":
-            self.clicked.emit(self._idx)
-        super().mousePressEvent(event)
+        painter.save()
+        painter.setClipRect(rect)
+
+        # Background
+        bg = self._SEL_BG if selected else self._BG.get(status, self._BG["equal"])
+        painter.fillRect(rect, bg)
+
+        # Left border (3px)
+        border_color = self._SEL_BORDER if selected else self._BORDER_COLOR.get(status, self._BORDER_COLOR["equal"])
+        border_rect = QRect(rect.left(), rect.top(), 3, rect.height())
+        painter.fillRect(border_rect, border_color)
+
+        # Content
+        if status != "placeholder" and content:
+            html_content = self._build_html(status, content, is_html, side)
+            content_width = rect.width() - 20  # 10px padding on each side
+            doc = self._get_doc(html_content, content_width)
+
+            painter.translate(rect.left() + 13, rect.top() + 7)
+            doc.drawContents(painter)
+
+        painter.restore()
+
+    def sizeHint(self, option: QStyleOptionViewItem, index: QModelIndex) -> QSize:
+        data = index.data(Qt.UserRole)
+        if data is None:
+            return QSize(100, 32)
+
+        status, content, is_html, side, selected = data
+
+        if status == "placeholder" or not content:
+            return QSize(option.rect.width() if option.rect.width() > 0 else 100, 32)
+
+        html_content = self._build_html(status, content, is_html, side)
+        width = option.rect.width() - 20 if option.rect.width() > 20 else 400
+        doc = self._get_doc(html_content, width)
+        h = int(doc.size().height()) + 14  # 7px top + 7px bottom padding
+        return QSize(option.rect.width() if option.rect.width() > 0 else 100, max(h, 32))
+
+    def clear_cache(self):
+        """Clear the document cache (call when loading new data)."""
+        self._doc_cache.clear()
 
 
-class ComparePanel(QScrollArea):
-    """Scrollable panel containing ParagraphBlock widgets."""
+class ComparePanel(QListView):
+    """
+    Memory-efficient panel using QListView with a custom model and delegate.
+    Only visible items are rendered — no widget is created per paragraph.
+    This drastically reduces memory usage for large documents (thousands of paragraphs).
+    """
     block_clicked = pyqtSignal(int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWidgetResizable(True)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self.setStyleSheet("QScrollArea { border:none; background:#FAFAFA; }")
+        self.setStyleSheet("""
+            QListView {
+                border: none;
+                background: #FAFAFA;
+            }
+            QListView::item {
+                margin: 1px 0px;
+            }
+        """)
+        self.setSelectionMode(QListView.NoSelection)
+        self.setEditTriggers(QListView.NoEditTriggers)
+        self.setUniformItemSizes(False)
+        self.setWordWrap(True)
+        self.setSpacing(1)
 
-        self._container = QWidget()
-        self._container.setStyleSheet("background:#FAFAFA;")
-        self._vbox = QVBoxLayout(self._container)
-        self._vbox.setContentsMargins(6, 6, 6, 6)
-        self._vbox.setSpacing(2)
-        self._vbox.addStretch()
-        self.setWidget(self._container)
+        self._model = BlockListModel(self)
+        self._delegate = BlockDelegate(self)
+        self.setModel(self._model)
+        self.setItemDelegate(self._delegate)
 
-        self._blocks: list = []
-        self._sel_idx = -1
+        self.clicked.connect(self._on_item_clicked)
+
+        self._partner: Optional['ComparePanel'] = None
+        self._row_heights: list = []
 
     def load_blocks(self, blocks: list, side: str, diff_positions: list):
-        while self._vbox.count():
-            item = self._vbox.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+        self._delegate.clear_cache()
+        self._model.set_data(blocks, side)
+        self._row_heights = []
+        # Schedule height computation after layout
+        QTimer.singleShot(50, self._compute_row_heights)
 
-        self._blocks = []
-        self._sel_idx = -1
-
-        for idx, (status, content, is_html) in enumerate(blocks):
-            block = ParagraphBlock(idx, status, content, is_html, side)
-            block.clicked.connect(self.block_clicked)
-            self._blocks.append(block)
-            self._vbox.addWidget(block)
-
-        self._vbox.addStretch()
+    def _compute_row_heights(self):
+        """Pre-compute row heights for scroll synchronization."""
+        n = self._model.block_count()
+        vp_width = self.viewport().width()
+        self._row_heights = []
+        option = QStyleOptionViewItem()
+        option.rect = QRect(0, 0, vp_width, 0)
+        for i in range(n):
+            idx = self._model.index(i)
+            size = self._delegate.sizeHint(option, idx)
+            self._row_heights.append(size.height())
 
     def set_selected(self, idx: int):
-        if 0 <= self._sel_idx < len(self._blocks):
-            self._blocks[self._sel_idx].set_selected(False)
-        self._sel_idx = idx
-        if 0 <= idx < len(self._blocks):
-            self._blocks[idx].set_selected(True)
+        self._model.set_selected(idx)
 
     def scroll_to_block(self, idx: int):
-        if 0 <= idx < len(self._blocks):
-            block = self._blocks[idx]
-            y = block.pos().y()
-            self.verticalScrollBar().setValue(max(0, y - 10))
+        if 0 <= idx < self._model.block_count():
+            index = self._model.index(idx)
+            self.scrollTo(index, QListView.PositionAtTop)
 
-    def get_blocks(self) -> list:
-        return self._blocks
+    def get_block_count(self) -> int:
+        return self._model.block_count()
+
+    def _on_item_clicked(self, index: QModelIndex):
+        if index.isValid():
+            data = index.data(Qt.UserRole)
+            if data and data[0] != "placeholder":
+                self.block_clicked.emit(index.row())
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -772,16 +975,13 @@ class CompareWindow(QMainWindow):
         self._current_diff = 0
         self._diff_count   = 0
         self._sel_idx      = -1
-        self._equalize_timer = QTimer()
-        self._equalize_timer.setSingleShot(True)
-        self._equalize_timer.setInterval(80)
-        self._equalize_timer.timeout.connect(self._equalize_panel_heights)
         self._setup_ui()
         self._setup_shortcuts()
 
     def _setup_shortcuts(self):
         QShortcut(QKeySequence("Escape"), self, self._go_back)
         QShortcut(QKeySequence("Ctrl+E"), self, self._export_report)
+        QShortcut(QKeySequence("Ctrl+P"), self, self._export_pdf)
         QShortcut(QKeySequence("Right"),  self, self._next_diff)
         QShortcut(QKeySequence("Left"),   self, self._prev_diff)
 
@@ -903,9 +1103,6 @@ class CompareWindow(QMainWindow):
         self.splitter.setStyleSheet(
             "QSplitter::handle { background:#DDDDDD; width:1px; }"
         )
-        self.splitter.splitterMoved.connect(
-            lambda pos, idx: self._equalize_timer.start()
-        )
 
         left_panel_w = QWidget()
         ll = QVBoxLayout(left_panel_w)
@@ -960,16 +1157,18 @@ class CompareWindow(QMainWindow):
         lay.setContentsMargins(12, 0, 12, 0)
         lay.setSpacing(8)
 
-        back_btn        = _flat_btn("← Noua comparatie")
-        self.swap_btn   = _flat_btn("⇄  Inverseaza")
+        back_btn        = _flat_btn("\u2190 Noua comparatie")
+        self.swap_btn   = _flat_btn("\u21c4  Inverseaza")
         self.export_btn = _flat_btn("Exporta HTML")
+        self.export_pdf_btn = _flat_btn("Exporta PDF")
         back_btn.clicked.connect(self._go_back)
         self.swap_btn.clicked.connect(self._swap_and_recompare)
         self.export_btn.clicked.connect(self._export_report)
+        self.export_pdf_btn.clicked.connect(self._export_pdf)
 
-        self.prev_diff_btn = _flat_btn("‹ Diff")
-        self.next_diff_btn = _flat_btn("Diff ›")
-        self.diff_counter_lbl = QLabel("—")
+        self.prev_diff_btn = _flat_btn("\u2039 Diff")
+        self.next_diff_btn = _flat_btn("Diff \u203a")
+        self.diff_counter_lbl = QLabel("\u2014")
         fc = QFont()
         fc.setPointSize(9)
         self.diff_counter_lbl.setFont(fc)
@@ -992,7 +1191,7 @@ class CompareWindow(QMainWindow):
         sim_lbl.setFont(f)
         sim_lbl.setStyleSheet("color:#999;")
 
-        self.sim_badge = QLabel("—")
+        self.sim_badge = QLabel("\u2014")
         fb = QFont()
         fb.setPointSize(11)
         fb.setWeight(QFont.DemiBold)
@@ -1019,6 +1218,7 @@ class CompareWindow(QMainWindow):
         lay.addWidget(self.right_name_lbl)
         lay.addSpacing(12)
         lay.addWidget(self.export_btn)
+        lay.addWidget(self.export_pdf_btn)
 
         return bar
 
@@ -1036,7 +1236,7 @@ class CompareWindow(QMainWindow):
         sl = QVBoxLayout(sim_w)
         sl.setSpacing(0)
         sl.setContentsMargins(0, 0, 20, 0)
-        self.sim_big = QLabel("—")
+        self.sim_big = QLabel("\u2014")
         fb = QFont()
         fb.setPointSize(26)
         fb.setWeight(QFont.Light)
@@ -1057,12 +1257,12 @@ class CompareWindow(QMainWindow):
         sep.setStyleSheet("color:#DDDDDD;")
         sep.setFixedWidth(1)
 
-        (self.s_equal,   w_eq)  = self._make_stat("IDENTICE",   "—")
-        (self.s_mod,     w_mod) = self._make_stat("MODIFICATE", "—")
-        (self.s_added,   w_add) = self._make_stat("ADAUGATE",   "—")
-        (self.s_deleted, w_del) = self._make_stat("STERSE",     "—")
-        (self.s_tot1,    w_t1)  = self._make_stat("PAR. DOC 1", "—")
-        (self.s_tot2,    w_t2)  = self._make_stat("PAR. DOC 2", "—")
+        (self.s_equal,   w_eq)  = self._make_stat("IDENTICE",   "\u2014")
+        (self.s_mod,     w_mod) = self._make_stat("MODIFICATE", "\u2014")
+        (self.s_added,   w_add) = self._make_stat("ADAUGATE",   "\u2014")
+        (self.s_deleted, w_del) = self._make_stat("STERSE",     "\u2014")
+        (self.s_tot1,    w_t1)  = self._make_stat("PAR. DOC 1", "\u2014")
+        (self.s_tot2,    w_t2)  = self._make_stat("PAR. DOC 2", "\u2014")
 
         legend = self._build_legend()
 
@@ -1156,6 +1356,7 @@ class CompareWindow(QMainWindow):
         ))
         self.swap_btn.setEnabled(not busy)
         self.export_btn.setEnabled(not busy and self._result is not None)
+        self.export_pdf_btn.setEnabled(not busy and self._result is not None)
         if busy:
             self.progress_bar.show()
         else:
@@ -1208,21 +1409,6 @@ class CompareWindow(QMainWindow):
         self.left_panel.set_selected(new_sel)
         self.right_panel.set_selected(new_sel)
 
-    def _equalize_panel_heights(self):
-        lb = self.left_panel.get_blocks()
-        rb = self.right_panel.get_blocks()
-        if not lb:
-            return
-        lw = self.left_panel.viewport().width()
-        rw = self.right_panel.viewport().width()
-        n = min(len(lb), len(rb))
-        for i in range(n):
-            lh = lb[i].preferred_height(lw)
-            rh = rb[i].preferred_height(rw)
-            target = max(lh, rh)
-            lb[i].setFixedHeight(target)
-            rb[i].setFixedHeight(target)
-
     def _update_compare_page(self, result: dict):
         self._sel_idx = -1
         sim    = result["similarity"]
@@ -1255,7 +1441,6 @@ class CompareWindow(QMainWindow):
         self.right_panel.load_blocks(
             result["right_blocks"], "right", result["diff_positions"]
         )
-        QTimer.singleShot(60, self._equalize_panel_heights)
 
     def _update_diff_nav(self):
         has = self._diff_count > 0
@@ -1320,7 +1505,7 @@ class CompareWindow(QMainWindow):
             + "_raport.html"
         )
         path, _ = QFileDialog.getSaveFileName(
-            self, "Salveaza raport", default, "HTML (*.html)"
+            self, "Salveaza raport HTML", default, "HTML (*.html)"
         )
         if not path:
             return
@@ -1334,6 +1519,43 @@ class CompareWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Eroare la export", str(e))
 
+    def _export_pdf(self):
+        """Export comparison report as PDF using QPrinter."""
+        if not self._result:
+            return
+        default = (
+            Path(self._result["path1"]).stem
+            + "_vs_"
+            + Path(self._result["path2"]).stem
+            + "_raport.pdf"
+        )
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Salveaza raport PDF", default, "PDF (*.pdf)"
+        )
+        if not path:
+            return
+        try:
+            html_content = export_pdf_report(
+                self._result["path1"], self._result["path2"], self._result,
+            )
+
+            printer = QPrinter(QPrinter.ScreenResolution)
+            printer.setOutputFormat(QPrinter.PdfFormat)
+            printer.setOutputFileName(path)
+            printer.setPageSize(QPrinter.A4)
+            printer.setPageMargins(12, 12, 12, 12, QPrinter.Millimeter)
+
+            doc = QTextDocument()
+            doc.setHtml(html_content)
+            # Set page size based on printer's printable area in device pixels
+            page_rect = printer.pageRect(QPrinter.Point)
+            doc.setPageSize(QRectF(0, 0, page_rect.width(), page_rect.height()).size())
+            doc.print_(printer)
+
+            QMessageBox.information(self, "Export PDF reusit", f"Salvat:\n{path}")
+        except Exception as e:
+            QMessageBox.critical(self, "Eroare la export PDF", str(e))
+
     def _sync_l2r(self, value: int):
         if not self._syncing:
             self._syncing = True
@@ -1345,11 +1567,6 @@ class CompareWindow(QMainWindow):
             self._syncing = True
             self.left_panel.verticalScrollBar().setValue(value)
             self._syncing = False
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        if self._result and self.stack.currentIndex() == 1:
-            self._equalize_timer.start()
 
 
 # ══════════════════════════════════════════════════════════════════════════════

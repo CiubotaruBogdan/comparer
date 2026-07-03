@@ -13,7 +13,9 @@ Compare two DOCX or editable PDF documents side by side, with paragraph-level an
 - **Similarity score** — overall percentage match between the two documents
 - **Statistics bar** — counts for identical / modified / added / deleted paragraphs
 - **Swap** — re-run the comparison with documents reversed
-- **Export** — save a self-contained HTML report of the comparison
+- **Export HTML** — save a self-contained HTML report of the comparison
+- **Export PDF** — save a PDF report with title "Documente comparate: doc1, doc2" and report date/time
+- **Memory-efficient rendering** — uses QListView with custom delegate (model/view pattern) instead of individual widgets per paragraph, drastically reducing memory usage on large documents
 
 ## Highlight legend
 
@@ -44,6 +46,15 @@ pip install -r requirements.txt
 ```bash
 python main.py
 ```
+
+## Keyboard Shortcuts
+
+| Shortcut | Action |
+|----------|--------|
+| `Ctrl+E` | Export HTML report |
+| `Ctrl+P` | Export PDF report |
+| `←` / `→` | Navigate between differences |
+| `Escape` | Return to new comparison |
 
 ## Build standalone `.exe`
 
