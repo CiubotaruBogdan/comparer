@@ -1548,12 +1548,8 @@ class CompareWindow(QMainWindow):
     def _export_report(self):
         if not self._result:
             return
-        default = (
-            Path(self._result["path1"]).stem
-            + "_vs_"
-            + Path(self._result["path2"]).stem
-            + "_raport.html"
-        )
+        now = datetime.now()
+        default = now.strftime("%Y%m%d") + "_N_xxx_RaportComparatie-[xxxxx].html"
         path, _ = QFileDialog.getSaveFileName(
             self, "Salveaza raport HTML", default, "HTML (*.html)"
         )
@@ -1573,12 +1569,8 @@ class CompareWindow(QMainWindow):
         """Export comparison report as PDF using QPrinter."""
         if not self._result:
             return
-        default = (
-            Path(self._result["path1"]).stem
-            + "_vs_"
-            + Path(self._result["path2"]).stem
-            + "_raport.pdf"
-        )
+        now = datetime.now()
+        default = now.strftime("%Y%m%d") + "_N_xxx_RaportComparatie-[xxxxx].pdf"
         path, _ = QFileDialog.getSaveFileName(
             self, "Salveaza raport PDF", default, "PDF (*.pdf)"
         )
