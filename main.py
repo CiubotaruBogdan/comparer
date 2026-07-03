@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Document Comparator v1.1
-Compară documente DOCX și PDF la nivel de paragraf,
-cu highlighting al diferențelor și statistici detaliate.
+Document Comparator v1.2
+Compară documente la nivel de paragraf (PDF cu PDF, DOCX cu DOCX),
+cu highlighting al diferențelor, statistici detaliate,
+și includere header/footer în comparația DOCX.
 """
 
 import sys
@@ -64,9 +65,50 @@ def _iter_block_texts(element, doc: DocxDocument) -> list:
     return texts
 
 
+def _iter_header_footer_texts(doc: DocxDocument) -> list:
+    """Extract text from all headers and footers in the document (deduplicated)."""
+    seen = set()
+    texts = []
+    for section in doc.sections:
+        for header in (section.header, section.first_page_header, section.even_page_header):
+            if header is not None and not header.is_linked_to_previous:
+                for para in header.paragraphs:
+                    text = para.text.strip()
+                    if text and text not in seen:
+                        seen.add(text)
+                        texts.append(f"[HEADER] {text}")
+        for footer in (section.footer, section.first_page_footer, section.even_page_footer):
+            if footer is not None and not footer.is_linked_to_previous:
+                for para in footer.paragraphs:
+                    text = para.text.strip()
+                    if text and text not in seen:
+                        seen.add(text)
+                        texts.append(f"[FOOTER] {text}")
+    # Fallback: if all are linked (single section doc), read the main header/footer
+    if not texts:
+        for section in doc.sections:
+            for header in (section.header,):
+                if header is not None:
+                    for para in header.paragraphs:
+                        text = para.text.strip()
+                        if text and text not in seen:
+                            seen.add(text)
+                            texts.append(f"[HEADER] {text}")
+            for footer in (section.footer,):
+                if footer is not None:
+                    for para in footer.paragraphs:
+                        text = para.text.strip()
+                        if text and text not in seen:
+                            seen.add(text)
+                            texts.append(f"[FOOTER] {text}")
+    return texts
+
+
 def read_docx(path: str) -> list:
     doc = DocxDocument(path)
-    return _iter_block_texts(doc.element.body, doc)
+    header_footer_texts = _iter_header_footer_texts(doc)
+    body_texts = _iter_block_texts(doc.element.body, doc)
+    return header_footer_texts + body_texts
 
 
 def read_pdf(path: str) -> list:
@@ -91,6 +133,22 @@ def read_document(path: str) -> list:
         return read_pdf(path)
     else:
         raise ValueError(f"Format nesuportat: {ext}\nSunt acceptate: .docx, .pdf")
+
+
+def validate_same_type(path1: str, path2: str) -> Optional[str]:
+    """Validate that both files have the same extension. Returns error message or None."""
+    ext1 = Path(path1).suffix.lower()
+    ext2 = Path(path2).suffix.lower()
+    if ext1 != ext2:
+        return (
+            f"Tipuri de fisiere diferite!\n\n"
+            f"Document 1: {ext1.upper().lstrip('.')}\n"
+            f"Document 2: {ext2.upper().lstrip('.')}\n\n"
+            f"Comparatia este permisa doar intre fisiere de acelasi tip:\n"
+            f"  \u2022 PDF cu PDF\n"
+            f"  \u2022 DOCX cu DOCX"
+        )
+    return None
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -759,7 +817,7 @@ class CompareWindow(QMainWindow):
         title.setFont(f)
         title.setStyleSheet("color:#111;")
 
-        subtitle = QLabel("Compara documente DOCX si PDF la nivel de paragraf")
+        subtitle = QLabel("Compara documente la nivel de paragraf (PDF cu PDF, DOCX cu DOCX)")
         subtitle.setAlignment(Qt.AlignCenter)
         fs = QFont()
         fs.setPointSize(9)
@@ -1079,6 +1137,18 @@ class CompareWindow(QMainWindow):
     def _on_file_loaded(self, _path: str):
         both = self.drop_left.file_path and self.drop_right.file_path
         self.compare_btn.setEnabled(bool(both))
+        # Show inline warning if types mismatch
+        if both:
+            err = validate_same_type(self.drop_left.file_path, self.drop_right.file_path)
+            if err:
+                self.status_lbl.setText(
+                    "\u26a0 Tipuri diferite! Comparatia e permisa doar PDF\u2194PDF sau DOCX\u2194DOCX."
+                )
+                self.status_lbl.setStyleSheet("color:#E53935;")
+                self.compare_btn.setEnabled(False)
+            else:
+                self.status_lbl.setText("")
+                self.status_lbl.setStyleSheet("color:#888;")
 
     def _set_busy(self, busy: bool):
         self.compare_btn.setEnabled(not busy and bool(
@@ -1096,6 +1166,12 @@ class CompareWindow(QMainWindow):
         p1 = path1 or self.drop_left.file_path
         p2 = path2 or self.drop_right.file_path
         if not p1 or not p2:
+            return
+
+        # Validate same file type
+        err = validate_same_type(p1, p2)
+        if err:
+            QMessageBox.warning(self, "Tip incompatibil", err)
             return
 
         if self._worker and self._worker.isRunning():
