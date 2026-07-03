@@ -1,33 +1,34 @@
 # Comparer
 
-Compare two DOCX or editable PDF documents side by side, with paragraph-level and word-level difference highlighting.
+Compară două documente DOCX sau PDF editabile side-by-side, cu evidențierea diferențelor la nivel de paragraf și cuvânt.
 
 ---
 
-## Features
+## Funcționalități
 
-- **Drag & drop** or click to load documents (`.docx`, `.pdf`)
-- **Paragraph-level diff** — identifies equal, modified, added, and deleted paragraphs
-- **Word-level diff** — inside modified paragraphs, highlights the exact words that changed
-- **Side-by-side viewer** with synchronized scrolling
-- **Similarity score** — overall percentage match between the two documents
-- **Statistics bar** — counts for identical / modified / added / deleted paragraphs
-- **Swap** — re-run the comparison with documents reversed
-- **Export HTML** — save a self-contained HTML report of the comparison
-- **Export PDF** — save a PDF report with title "Documente comparate: doc1, doc2" and report date/time
-- **Memory-efficient rendering** — uses QListView with custom delegate (model/view pattern) instead of individual widgets per paragraph, drastically reducing memory usage on large documents
+- **Drag & drop** sau click pentru încărcarea documentelor (`.docx`, `.pdf`)
+- **Comparație la nivel de paragraf** — identifică paragrafele identice, modificate, adăugate și șterse
+- **Comparație la nivel de cuvânt** — în paragrafele modificate, evidențiază exact cuvintele schimbate
+- **Vizualizare side-by-side** cu scroll sincronizat
+- **Scor de similaritate** — procentul de potrivire între cele două documente
+- **Bară de statistici** — număr paragrafe identice / modificate / adăugate / șterse
+- **Inversare documente** — re-rulează comparația cu documentele inversate
+- **Export HTML** — salvează un raport HTML complet cu highlighting
+- **Export PDF** — salvează un raport PDF cu titlu "Documente comparate: doc1, doc2" și data/ora raportului
+- **Buton ștergere (✕)** — permite eliminarea unui document încărcat greșit fără a reseta toată interfața
+- **Randare optimizată pentru memorie** — folosește QListView cu delegate custom (model/view pattern) în loc de widget-uri individuale per paragraf, reducând drastic consumul de memorie pe documente mari
 
-## Highlight legend
+## Legendă culori
 
-| Color | Meaning |
-|---|---|
-| 🔴 Red | Paragraph present only in Document 1 (deleted) |
-| 🟢 Green | Paragraph present only in Document 2 (added) |
-| 🟡 Yellow | Paragraph exists in both but was modified |
+| Culoare | Semnificație |
+|---------|-------------|
+| Roșu | Paragraf prezent doar în Documentul 1 (șters) |
+| Verde | Paragraf prezent doar în Documentul 2 (adăugat) |
+| Galben | Paragraf existent în ambele dar modificat |
 
 ---
 
-## Requirements
+## Cerințe
 
 ```
 PyQt5 >= 5.15
@@ -35,33 +36,33 @@ python-docx >= 0.8.11
 PyMuPDF >= 1.23
 ```
 
-Install with:
+Instalare:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-## Run
+## Rulare
 
 ```bash
 python main.py
 ```
 
-## Keyboard Shortcuts
+## Shortcut-uri tastatură
 
-| Shortcut | Action |
+| Shortcut | Acțiune |
 |----------|--------|
-| `Ctrl+E` | Export HTML report |
-| `Ctrl+P` | Export PDF report |
-| `←` / `→` | Navigate between differences |
-| `Escape` | Return to new comparison |
+| `Ctrl+E` | Export raport HTML |
+| `Ctrl+P` | Export raport PDF |
+| `←` / `→` | Navigare între diferențe |
+| `Escape` | Comparatie nouă |
 
-## Build standalone `.exe`
+## Build executabil `.exe`
 
 ```bash
 build.bat
 ```
 
-Output: `dist/Comparer.exe` — no Python or dependencies required on the target machine.
+Rezultat: `dist/Comparer.exe` — nu necesită Python sau dependențe pe mașina țintă.
 
-> **Note:** PDF comparison works only on text-based (editable) PDFs. Scanned image PDFs require OCR pre-processing.
+> **Notă:** Comparația PDF funcționează doar pe PDF-uri text (editabile). PDF-urile scanate (imagine) necesită pre-procesare OCR.
