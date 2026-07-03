@@ -25,7 +25,7 @@ pyinstaller ^
     --hidden-import PyQt5.QtWidgets ^
     --hidden-import PyQt5.QtCore ^
     --hidden-import PyQt5.QtGui ^
-    --hidden-import PyQt5.QtPrintSupport ^
+    --hidden-import fpdf ^
     --hidden-import difflib ^
     --hidden-import html ^
     --hidden-import pathlib ^

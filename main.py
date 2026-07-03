@@ -32,14 +32,14 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import (
     Qt, pyqtSignal, QThread, pyqtSlot, QTimer, QAbstractListModel,
-    QModelIndex, QSize, QRect, QPoint, QRectF,
+    QModelIndex, QSize, QRect, QPoint,
 )
 from PyQt5.QtGui import (
     QFont, QColor, QPalette, QIcon, QKeySequence, QPainter,
     QTextDocument, QAbstractTextDocumentLayout, QPen, QBrush,
     QFontMetrics,
 )
-from PyQt5.QtPrintSupport import QPrinter
+# QPrinter no longer needed - PDF export uses fpdf2 directly
 
 
 def _resource(relative: str) -> Path:
@@ -405,109 +405,252 @@ def export_html_report(path1: str, path2: str, result: dict) -> str:
 </body></html>"""
 
 
-def export_pdf_report(path1: str, path2: str, result: dict) -> str:
-    """Generate HTML content optimized for PDF rendering via QPrinter."""
+import re as _re
+import os as _os
+from fpdf import FPDF as _FPDF
+
+
+def _find_system_font(name: str, bold: bool = False) -> str:
+    """Find a TrueType font file on the system (Windows/Linux)."""
+    suffix = 'bd' if bold else ''
+    candidates = []
+    if sys.platform == 'win32':
+        windir = _os.environ.get('WINDIR', r'C:\Windows')
+        fonts_dir = _os.path.join(windir, 'Fonts')
+        candidates = [
+            _os.path.join(fonts_dir, f'{name.lower()}{suffix}.ttf'),
+            _os.path.join(fonts_dir, f'{name}{suffix}.ttf'),
+        ]
+    else:
+        # Linux fallback paths
+        for base in ['/usr/share/fonts', '/usr/local/share/fonts']:
+            for root, dirs, files in _os.walk(base):
+                for f in files:
+                    if f.lower().startswith(name.lower()) and f.endswith('.ttf'):
+                        if bold and ('bold' in f.lower() or 'Bold' in f):
+                            candidates.append(_os.path.join(root, f))
+                        elif not bold and 'bold' not in f.lower():
+                            candidates.append(_os.path.join(root, f))
+    for c in candidates:
+        if _os.path.isfile(c):
+            return c
+    return ""
+
+
+def _strip_html_tags(text: str) -> str:
+    """Remove HTML tags and decode common entities to get plain text."""
+    clean = _re.sub(r'<[^>]+>', '', text)
+    clean = (clean.replace('&lt;', '<').replace('&gt;', '>')
+             .replace('&amp;', '&').replace('&nbsp;', ' ')
+             .replace('&#x27;', "'").replace('&quot;', '"'))
+    return clean.strip()
+
+
+def _hex_to_rgb(hex_color: str) -> tuple:
+    h = hex_color.lstrip('#')
+    return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
+
+
+def export_pdf_report(path1: str, path2: str, result: dict, output_path: str):
+    """Generate a PDF report directly using fpdf2 (no HTML intermediary)."""
     sim = result["similarity"]
     stats = result["stats"]
-    n1 = html_lib.escape(Path(path1).name)
-    n2 = html_lib.escape(Path(path2).name)
+    n1 = Path(path1).name
+    n2 = Path(path2).name
     now = datetime.now().strftime("%d.%m.%Y  %H:%M:%S")
 
-    # Build left/right block rows for the table
     left_blocks = result["left_blocks"]
     right_blocks = result["right_blocks"]
 
-    STYLE = {
-        "equal":       ("#FFFFFF", "#E0E0E0"),
-        "replace":     ("#FFECB3", "#FFB300"),
-        "delete":      ("#FFCDD2", "#E53935"),
-        "insert":      ("#C8E6C9", "#43A047"),
-        "placeholder": ("#F9F9F9", "#EEEEEE"),
+    BG_COLORS = {
+        "equal":       "#FFFFFF",
+        "replace":     "#FFECB3",
+        "delete":      "#FFCDD2",
+        "insert":      "#C8E6C9",
+        "placeholder": "#F5F5F5",
     }
-    BADGE = {
-        "delete": '<span style="font-size:8px;background:#E53935;color:#fff;padding:1px 4px;border-radius:2px;margin-right:4px;">STERS</span>',
-        "insert": '<span style="font-size:8px;background:#43A047;color:#fff;padding:1px 4px;border-radius:2px;margin-right:4px;">NOU</span>',
+    BORDER_COLORS = {
+        "equal":       "#E0E0E0",
+        "replace":     "#FFB300",
+        "delete":      "#E53935",
+        "insert":      "#43A047",
+        "placeholder": "#EEEEEE",
     }
 
-    rows = []
+    pdf = _FPDF()
+    pdf.set_auto_page_break(True, margin=12)
+
+    # Register system font (Arial on Windows, DejaVuSans on Linux as fallback)
+    font_regular = _find_system_font('arial', bold=False)
+    font_bold = _find_system_font('arial', bold=True)
+    # Fallback to DejaVuSans on Linux if Arial not available
+    if not font_regular:
+        font_regular = _find_system_font('DejaVuSans', bold=False)
+        font_bold = _find_system_font('DejaVuSans', bold=True)
+    _font = 'Helvetica'  # fallback (built-in, ASCII only)
+    if font_regular:
+        pdf.add_font('F', '', font_regular)
+        if font_bold:
+            pdf.add_font('F', 'B', font_bold)
+        else:
+            pdf.add_font('F', 'B', font_regular)
+        _font = 'F'
+
+    pdf.add_page()
+    page_w = pdf.w - 20  # usable width (margins 10 each side)
+    half_w = page_w / 2
+
+    # ── Title ──
+    pdf.set_font(_font, 'B', 13)
+    pdf.set_text_color(17, 17, 17)
+    pdf.cell(0, 9, f'Documente comparate: {n1}, {n2}',
+             new_x='LMARGIN', new_y='NEXT', align='C')
+
+    # ── Subtitle (date) ──
+    pdf.set_font(_font, '', 9)
+    pdf.set_text_color(100, 100, 100)
+    pdf.cell(0, 6, f'Data raport: {now}', new_x='LMARGIN', new_y='NEXT', align='C')
+    pdf.ln(5)
+
+    # ── Statistics row ──
+    stats_data = [
+        (f"{sim*100:.1f}%", "SIMILARITATE"),
+        (str(stats["equal"]), "IDENTICE"),
+        (str(stats["modified"]), "MODIFICATE"),
+        (str(stats["added"]), "ADAUGATE"),
+        (str(stats["deleted"]), "STERSE"),
+        (str(stats["total_left"]), "PAR. DOC 1"),
+        (str(stats["total_right"]), "PAR. DOC 2"),
+    ]
+    col_w = page_w / len(stats_data)
+    y_stats = pdf.get_y()
+
+    # Draw stat values
+    pdf.set_font(_font, 'B', 11)
+    pdf.set_text_color(17, 17, 17)
+    for i, (val, _) in enumerate(stats_data):
+        pdf.set_xy(10 + i * col_w, y_stats)
+        pdf.cell(col_w, 7, val, align='C')
+
+    # Draw stat labels
+    pdf.set_font(_font, '', 6)
+    pdf.set_text_color(120, 120, 120)
+    for i, (_, lbl) in enumerate(stats_data):
+        pdf.set_xy(10 + i * col_w, y_stats + 7)
+        pdf.cell(col_w, 4, lbl, align='C')
+
+    pdf.set_y(y_stats + 14)
+    pdf.ln(3)
+
+    # ── Table header ──
+    pdf.set_fill_color(34, 34, 34)
+    pdf.set_text_color(255, 255, 255)
+    pdf.set_font(_font, 'B', 8)
+    pdf.cell(half_w, 7, f'  Document 1 \u2014 Baza: {n1}', fill=True)
+    pdf.cell(half_w, 7, f'  Document 2 \u2014 Comparatie: {n2}',
+             fill=True, new_x='LMARGIN', new_y='NEXT')
+
+    # ── Table rows ──
+    pdf.set_text_color(0, 0, 0)
+    LINE_H = 3.8
+    CELL_PAD = 1.5
+
+    def _draw_table_header():
+        pdf.set_fill_color(34, 34, 34)
+        pdf.set_text_color(255, 255, 255)
+        pdf.set_font(_font, 'B', 8)
+        pdf.cell(half_w, 7, f'  Document 1 \u2014 Baza: {n1}', fill=True)
+        pdf.cell(half_w, 7, f'  Document 2 \u2014 Comparatie: {n2}',
+                 fill=True, new_x='LMARGIN', new_y='NEXT')
+        pdf.set_text_color(0, 0, 0)
+
+    def _measure_text_height(text, width):
+        """Calculate the height a multi_cell would occupy without drawing."""
+        pdf.set_font(_font, '', 8)
+        lines = pdf.multi_cell(width, LINE_H, text or " ",
+                               border=0, align='L', dry_run=True, output='LINES')
+        return max(len(lines) * LINE_H, LINE_H)
+
     for idx in range(len(left_blocks)):
         l_status, l_content, l_is_html = left_blocks[idx]
         r_status, r_content, r_is_html = right_blocks[idx]
 
-        l_bg, l_bc = STYLE.get(l_status, STYLE["equal"])
-        r_bg, r_bc = STYLE.get(r_status, STYLE["equal"])
+        # Get plain text (strip HTML highlighting)
+        l_text = _strip_html_tags(l_content) if l_is_html else l_content
+        r_text = _strip_html_tags(r_content) if r_is_html else r_content
+        if l_status == "placeholder":
+            l_text = ""
+        if r_status == "placeholder":
+            r_text = ""
 
-        # Left cell content
-        l_badge = ""
+        # Add status prefix for deleted/inserted
         if l_status == "delete":
-            l_badge = BADGE["delete"]
-        l_text = ""
-        if l_status != "placeholder":
-            l_text = l_content if l_is_html else html_lib.escape(l_content)
-
-        # Right cell content
-        r_badge = ""
+            l_text = "[STERS] " + l_text
         if r_status == "insert":
-            r_badge = BADGE["insert"]
-        r_text = ""
-        if r_status != "placeholder":
-            r_text = r_content if r_is_html else html_lib.escape(r_content)
+            r_text = "[NOU] " + r_text
 
-        rows.append(
-            f'<tr>'
-            f'<td style="background:{l_bg};border-left:3px solid {l_bc};padding:4px 6px;'
-            f'vertical-align:top;width:50%;font-size:9px;line-height:1.4;">'
-            f'{l_badge}{l_text}</td>'
-            f'<td style="background:{r_bg};border-left:3px solid {r_bc};padding:4px 6px;'
-            f'vertical-align:top;width:50%;font-size:9px;line-height:1.4;">'
-            f'{r_badge}{r_text}</td>'
-            f'</tr>'
-        )
+        # Calculate row height without drawing (dry_run)
+        l_height = _measure_text_height(l_text, half_w - 6)
+        r_height = _measure_text_height(r_text, half_w - 6)
+        row_h = max(l_height, r_height) + CELL_PAD * 2
+        row_h = max(row_h, 6)
 
-    table_rows = "\n".join(rows)
+        y_before = pdf.get_y()
 
-    return f"""<!DOCTYPE html>
-<html lang="ro">
-<head>
-<meta charset="utf-8">
-<style>
-  * {{ box-sizing:border-box; margin:0; padding:0; }}
-  body {{ font-family: Arial, sans-serif; font-size:10px; color:#111; }}
-  .title {{ font-size:16px; font-weight:bold; text-align:center; margin-top:12px; }}
-  .subtitle {{ font-size:10px; color:#555; text-align:center; margin-top:6px; margin-bottom:14px; }}
-  .stats-table {{ width:100%; border-collapse:collapse; margin-bottom:10px; }}
-  .stats-table td {{ padding:6px 10px; text-align:center; border:1px solid #ddd; }}
-  .stats-table .val {{ font-size:14px; font-weight:bold; }}
-  .stats-table .lbl {{ font-size:8px; color:#777; letter-spacing:0.5px; }}
-  .compare-table {{ width:100%; border-collapse:collapse; }}
-  .compare-table td {{ border-bottom:1px solid #eee; }}
-  .col-hdr {{ background:#222; color:#fff; padding:5px 8px; font-size:9px; font-weight:bold; }}
-</style>
-</head>
-<body>
-<div class="title">Documente comparate: {n1}, {n2}</div>
-<div class="subtitle">Data raport: {now}</div>
+        # Page break check
+        if y_before + row_h > pdf.h - 12:
+            pdf.add_page()
+            _draw_table_header()
+            y_before = pdf.get_y()
 
-<table class="stats-table">
-<tr>
-  <td><div class="val">{sim*100:.1f}%</div><div class="lbl">SIMILARITATE</div></td>
-  <td><div class="val">{stats["equal"]}</div><div class="lbl">IDENTICE</div></td>
-  <td><div class="val">{stats["modified"]}</div><div class="lbl">MODIFICATE</div></td>
-  <td><div class="val">{stats["added"]}</div><div class="lbl">ADAUGATE</div></td>
-  <td><div class="val">{stats["deleted"]}</div><div class="lbl">STERSE</div></td>
-  <td><div class="val">{stats["total_left"]}</div><div class="lbl">PAR. DOC 1</div></td>
-  <td><div class="val">{stats["total_right"]}</div><div class="lbl">PAR. DOC 2</div></td>
-</tr>
-</table>
+        # Draw cell backgrounds
+        l_bg = _hex_to_rgb(BG_COLORS.get(l_status, "#FFFFFF"))
+        r_bg = _hex_to_rgb(BG_COLORS.get(r_status, "#FFFFFF"))
+        pdf.set_fill_color(*l_bg)
+        pdf.rect(10, y_before, half_w, row_h, 'F')
+        pdf.set_fill_color(*r_bg)
+        pdf.rect(10 + half_w, y_before, half_w, row_h, 'F')
 
-<table class="compare-table">
-<tr>
-  <td class="col-hdr" style="width:50%;">Document 1 — Baza: {n1}</td>
-  <td class="col-hdr" style="width:50%;">Document 2 — Comparatie: {n2}</td>
-</tr>
-{table_rows}
-</table>
-</body></html>"""
+        # Draw left accent border
+        l_bc = _hex_to_rgb(BORDER_COLORS.get(l_status, "#E0E0E0"))
+        r_bc = _hex_to_rgb(BORDER_COLORS.get(r_status, "#E0E0E0"))
+        pdf.set_draw_color(*l_bc)
+        pdf.set_line_width(0.6)
+        pdf.line(10, y_before, 10, y_before + row_h)
+        pdf.set_draw_color(*r_bc)
+        pdf.line(10 + half_w, y_before, 10 + half_w, y_before + row_h)
+
+        # Draw bottom separator
+        pdf.set_draw_color(220, 220, 220)
+        pdf.set_line_width(0.15)
+        pdf.line(10, y_before + row_h, pdf.w - 10, y_before + row_h)
+
+        # Draw text
+        pdf.set_font(_font, '', 8)
+
+        if l_status == "delete":
+            pdf.set_text_color(180, 30, 30)
+        elif l_status == "replace":
+            pdf.set_text_color(50, 50, 50)
+        else:
+            pdf.set_text_color(17, 17, 17)
+        pdf.set_xy(12, y_before + CELL_PAD)
+        if l_text:
+            pdf.multi_cell(half_w - 6, LINE_H, l_text, border=0, align='L')
+
+        if r_status == "insert":
+            pdf.set_text_color(30, 120, 30)
+        elif r_status == "replace":
+            pdf.set_text_color(50, 50, 50)
+        else:
+            pdf.set_text_color(17, 17, 17)
+        pdf.set_xy(10 + half_w + 2, y_before + CELL_PAD)
+        if r_text:
+            pdf.multi_cell(half_w - 6, LINE_H, r_text, border=0, align='L')
+
+        pdf.set_y(y_before + row_h)
+
+    pdf.output(output_path)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1566,7 +1709,7 @@ class CompareWindow(QMainWindow):
             QMessageBox.critical(self, "Eroare la export", str(e))
 
     def _export_pdf(self):
-        """Export comparison report as PDF using QPrinter."""
+        """Export comparison report as PDF using fpdf2."""
         if not self._result:
             return
         now = datetime.now()
@@ -1577,23 +1720,10 @@ class CompareWindow(QMainWindow):
         if not path:
             return
         try:
-            html_content = export_pdf_report(
-                self._result["path1"], self._result["path2"], self._result,
+            export_pdf_report(
+                self._result["path1"], self._result["path2"],
+                self._result, path,
             )
-
-            printer = QPrinter(QPrinter.ScreenResolution)
-            printer.setOutputFormat(QPrinter.PdfFormat)
-            printer.setOutputFileName(path)
-            printer.setPageSize(QPrinter.A4)
-            printer.setPageMargins(12, 12, 12, 12, QPrinter.Millimeter)
-
-            doc = QTextDocument()
-            doc.setHtml(html_content)
-            # Set page size based on printer's printable area in device pixels
-            page_rect = printer.pageRect(QPrinter.Point)
-            doc.setPageSize(QRectF(0, 0, page_rect.width(), page_rect.height()).size())
-            doc.print_(printer)
-
             QMessageBox.information(self, "Export PDF reusit", f"Salvat:\n{path}")
         except Exception as e:
             QMessageBox.critical(self, "Eroare la export PDF", str(e))
