@@ -1596,26 +1596,12 @@ class CompareWindow(QMainWindow):
         self.prev_diff_btn.clicked.connect(self._prev_diff)
         self.next_diff_btn.clicked.connect(self._next_diff)
 
-        self.left_name_lbl = QLabel("")
-        f = QFont()
-        f.setPointSize(9)
-        self.left_name_lbl.setFont(f)
-        self.left_name_lbl.setStyleSheet("color:#555;")
-
-        self.right_name_lbl = QLabel("")
-        self.right_name_lbl.setFont(f)
-        self.right_name_lbl.setStyleSheet("color:#555;")
-
         lay.addWidget(self.swap_btn)
         lay.addSpacing(8)
         lay.addWidget(self.prev_diff_btn)
         lay.addWidget(self.diff_counter_lbl)
         lay.addWidget(self.next_diff_btn)
-        lay.addSpacing(8)
-        lay.addWidget(self.left_name_lbl)
         lay.addStretch()
-        lay.addWidget(self.right_name_lbl)
-        lay.addSpacing(12)
         lay.addWidget(self.export_btn)
         lay.addWidget(self.export_pdf_btn)
         lay.addSpacing(4)
@@ -1829,8 +1815,6 @@ class CompareWindow(QMainWindow):
 
         n1 = Path(result["path1"]).name
         n2 = Path(result["path2"]).name
-        self.left_name_lbl.setText(n1)
-        self.right_name_lbl.setText(n2)
         self.left_hdr.setText(f"  {n1}")
         self.right_hdr.setText(f"  {n2}")
 
