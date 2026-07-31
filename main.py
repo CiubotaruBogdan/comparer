@@ -28,7 +28,8 @@ from PyQt5.QtWidgets import (
     QLabel, QPushButton, QSplitter, QFrame,
     QFileDialog, QStackedWidget, QMessageBox, QSizePolicy, QProgressBar,
     QShortcut, QScrollArea, QAbstractScrollArea, QStyleOptionViewItem,
-    QStyledItemDelegate, QListView,
+    QStyledItemDelegate, QListView, QDialog, QGroupBox, QGridLayout,
+    QTextBrowser,
 )
 from PyQt5.QtCore import (
     Qt, pyqtSignal, QThread, pyqtSlot, QTimer, QAbstractListModel,
@@ -654,6 +655,251 @@ def export_pdf_report(path1: str, path2: str, result: dict, output_path: str):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# 2b. Extragere metadate documente
+# ══════════════════════════════════════════════════════════════════════════════
+
+def get_document_metadata(path: str) -> dict:
+    """Extract metadata (author, creation date, modification date, etc.) from a document."""
+    meta = {
+        "file_name": Path(path).name,
+        "file_path": str(path),
+        "file_size": "",
+        "format": Path(path).suffix.upper().lstrip("."),
+        "author": "",
+        "last_modified_by": "",
+        "created": "",
+        "modified": "",
+        "revision": "",
+        "title": "",
+        "subject": "",
+        "pages": "",
+        "words": "",
+    }
+
+    # File size
+    try:
+        size_bytes = _os.path.getsize(path)
+        if size_bytes < 1024:
+            meta["file_size"] = f"{size_bytes} B"
+        elif size_bytes < 1024 * 1024:
+            meta["file_size"] = f"{size_bytes / 1024:.1f} KB"
+        else:
+            meta["file_size"] = f"{size_bytes / (1024*1024):.2f} MB"
+    except OSError:
+        pass
+
+    # File system modification time
+    try:
+        mtime = _os.path.getmtime(path)
+        meta["file_modified"] = datetime.fromtimestamp(mtime).strftime("%d.%m.%Y  %H:%M:%S")
+    except OSError:
+        meta["file_modified"] = ""
+
+    ext = Path(path).suffix.lower()
+
+    if ext == ".docx":
+        try:
+            doc = DocxDocument(path)
+            props = doc.core_properties
+            meta["author"] = props.author or ""
+            meta["last_modified_by"] = props.last_modified_by or ""
+            meta["created"] = props.created.strftime("%d.%m.%Y  %H:%M:%S") if props.created else ""
+            meta["modified"] = props.modified.strftime("%d.%m.%Y  %H:%M:%S") if props.modified else ""
+            meta["revision"] = str(props.revision) if props.revision else ""
+            meta["title"] = props.title or ""
+            meta["subject"] = props.subject or ""
+            # Word count from paragraphs
+            body_texts = _iter_block_texts(doc.element.body, doc)
+            word_count = sum(len(t.split()) for t in body_texts)
+            meta["words"] = str(word_count)
+            # Page count (from extended properties if available)
+            try:
+                from docx.opc.constants import RELATIONSHIP_TYPE as RT
+                app_part = doc.part.package.part_related_by(RT.EXTENDED_PROPERTIES)
+                if app_part is not None:
+                    from lxml import etree
+                    app_xml = app_part._element
+                    ns = {'ep': 'http://schemas.openxmlformats.org/officeDocument/2006/extended-properties'}
+                    pages_el = app_xml.find('.//ep:Pages', ns)
+                    if pages_el is not None and pages_el.text:
+                        meta["pages"] = pages_el.text
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    elif ext == ".pdf":
+        try:
+            with fitz.open(path) as doc:
+                meta["pages"] = str(doc.page_count)
+                pdf_meta = doc.metadata
+                if pdf_meta:
+                    meta["author"] = pdf_meta.get("author", "") or ""
+                    meta["title"] = pdf_meta.get("title", "") or ""
+                    meta["subject"] = pdf_meta.get("subject", "") or ""
+                    # PDF creation/modification dates
+                    cr = pdf_meta.get("creationDate", "")
+                    md = pdf_meta.get("modDate", "")
+                    meta["created"] = _parse_pdf_date(cr) if cr else ""
+                    meta["modified"] = _parse_pdf_date(md) if md else ""
+                    meta["last_modified_by"] = pdf_meta.get("producer", "") or ""
+                # Word count
+                word_count = 0
+                for page in doc:
+                    text = page.get_text()
+                    word_count += len(text.split())
+                meta["words"] = str(word_count)
+        except Exception:
+            pass
+
+    return meta
+
+
+def _parse_pdf_date(date_str: str) -> str:
+    """Parse PDF date format (D:YYYYMMDDHHmmSS) to readable format."""
+    if not date_str:
+        return ""
+    # Remove D: prefix
+    s = date_str
+    if s.startswith("D:"):
+        s = s[2:]
+    # Remove timezone info
+    for sep in ("+", "-", "Z"):
+        if sep in s[8:]:
+            s = s[:s.index(sep, 8)]
+    try:
+        if len(s) >= 14:
+            dt = datetime.strptime(s[:14], "%Y%m%d%H%M%S")
+            return dt.strftime("%d.%m.%Y  %H:%M:%S")
+        elif len(s) >= 8:
+            dt = datetime.strptime(s[:8], "%Y%m%d")
+            return dt.strftime("%d.%m.%Y")
+    except ValueError:
+        pass
+    return date_str
+
+
+class DocumentInfoDialog(QDialog):
+    """Dialog that shows metadata information about both compared documents."""
+
+    def __init__(self, path1: str, path2: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Informatii Documente")
+        self.setMinimumSize(700, 520)
+        self.setStyleSheet("background:#fff;")
+        self._build_ui(path1, path2)
+
+    def _build_ui(self, path1: str, path2: str):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(16)
+
+        # Title
+        title = QLabel("Informatii Documente")
+        f = QFont()
+        f.setPointSize(14)
+        f.setWeight(QFont.DemiBold)
+        title.setFont(f)
+        title.setStyleSheet("color:#111;")
+        title.setAlignment(Qt.AlignCenter)
+        layout.addWidget(title)
+
+        # Get metadata for both documents
+        meta1 = get_document_metadata(path1)
+        meta2 = get_document_metadata(path2)
+
+        # Document 1 group
+        layout.addWidget(self._build_doc_group("Document 1 (Baza)", meta1))
+
+        # Document 2 group
+        layout.addWidget(self._build_doc_group("Document 2 (Comparatie)", meta2))
+
+        # Close button
+        close_btn = QPushButton("Inchide")
+        close_btn.setFixedHeight(34)
+        close_btn.setFixedWidth(120)
+        close_btn.setCursor(Qt.PointingHandCursor)
+        close_btn.setStyleSheet("""
+            QPushButton {
+                background:#111; color:#fff;
+                border:none; border-radius:4px; padding:6px 22px;
+                font-size:10px;
+            }
+            QPushButton:hover { background:#333; }
+            QPushButton:pressed { background:#000; }
+        """)
+        close_btn.clicked.connect(self.accept)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        btn_row.addWidget(close_btn)
+        btn_row.addStretch()
+        layout.addLayout(btn_row)
+
+    def _build_doc_group(self, title: str, meta: dict) -> QGroupBox:
+        group = QGroupBox(title)
+        group.setStyleSheet("""
+            QGroupBox {
+                font-size: 11px;
+                font-weight: bold;
+                color: #333;
+                border: 1px solid #DDD;
+                border-radius: 6px;
+                margin-top: 10px;
+                padding-top: 14px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 12px;
+                padding: 0 6px;
+                background: #fff;
+            }
+        """)
+
+        grid = QGridLayout(group)
+        grid.setContentsMargins(16, 12, 16, 12)
+        grid.setSpacing(6)
+        grid.setColumnMinimumWidth(0, 140)
+
+        rows = [
+            ("Nume fisier:", meta.get("file_name", "")),
+            ("Format:", meta.get("format", "")),
+            ("Dimensiune:", meta.get("file_size", "")),
+            ("Pagini:", meta.get("pages", "")),
+            ("Cuvinte:", meta.get("words", "")),
+            ("Titlu document:", meta.get("title", "")),
+            ("Subiect:", meta.get("subject", "")),
+            ("Autor (creare):", meta.get("author", "")),
+            ("Ultima editare de:", meta.get("last_modified_by", "")),
+            ("Data creare:", meta.get("created", "")),
+            ("Data ultima editare:", meta.get("modified", "")),
+            ("Revizie:", meta.get("revision", "")),
+            ("Modificat pe disc:", meta.get("file_modified", "")),
+        ]
+
+        row_idx = 0
+        for label_text, value in rows:
+            if not value:
+                continue
+            lbl = QLabel(label_text)
+            lbl.setStyleSheet("color:#888; font-size:10px; font-weight:normal;")
+            val = QLabel(str(value))
+            val.setStyleSheet("color:#111; font-size:10px; font-weight:normal;")
+            val.setWordWrap(True)
+            val.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            grid.addWidget(lbl, row_idx, 0, Qt.AlignTop)
+            grid.addWidget(val, row_idx, 1, Qt.AlignTop)
+            row_idx += 1
+
+        if row_idx == 0:
+            no_data = QLabel("Nu s-au putut extrage informatii din acest document.")
+            no_data.setStyleSheet("color:#999; font-size:10px; font-style:italic; font-weight:normal;")
+            grid.addWidget(no_data, 0, 0, 1, 2)
+
+        return group
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # 3. Thread de lucru
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -1199,23 +1445,7 @@ class CompareWindow(QMainWindow):
         center_layout.setContentsMargins(0, 0, 0, 0)
         center_layout.setSpacing(0)
 
-        title = QLabel("Comparer")
-        title.setAlignment(Qt.AlignCenter)
-        f = QFont()
-        f.setPointSize(28)
-        f.setWeight(QFont.Light)
-        title.setFont(f)
-        title.setStyleSheet("color:#111;")
-
-        subtitle = QLabel("Compara documente la nivel de paragraf (PDF cu PDF, DOCX cu DOCX)")
-        subtitle.setAlignment(Qt.AlignCenter)
-        fs = QFont()
-        fs.setPointSize(9)
-        subtitle.setFont(fs)
-        subtitle.setStyleSheet("color:#AAA; margin-top:6px; margin-bottom:36px;")
-
-        center_layout.addWidget(title)
-        center_layout.addWidget(subtitle)
+        center_layout.addSpacing(36)
 
         zones = QHBoxLayout()
         zones.setSpacing(16)
@@ -1351,10 +1581,12 @@ class CompareWindow(QMainWindow):
         self.swap_btn   = _flat_btn("\u21c4  Inverseaza")
         self.export_btn = _flat_btn("Exporta HTML")
         self.export_pdf_btn = _flat_btn("Exporta PDF")
+        self.info_btn   = _flat_btn("\u2139  Info documente")
         back_btn.clicked.connect(self._go_back)
         self.swap_btn.clicked.connect(self._swap_and_recompare)
         self.export_btn.clicked.connect(self._export_report)
         self.export_pdf_btn.clicked.connect(self._export_pdf)
+        self.info_btn.clicked.connect(self._show_doc_info)
 
         self.prev_diff_btn = _flat_btn("\u2039 Diff")
         self.next_diff_btn = _flat_btn("Diff \u203a")
@@ -1409,6 +1641,8 @@ class CompareWindow(QMainWindow):
         lay.addSpacing(12)
         lay.addWidget(self.export_btn)
         lay.addWidget(self.export_pdf_btn)
+        lay.addSpacing(4)
+        lay.addWidget(self.info_btn)
 
         return bar
 
@@ -1727,6 +1961,17 @@ class CompareWindow(QMainWindow):
             QMessageBox.information(self, "Export PDF reusit", f"Salvat:\n{path}")
         except Exception as e:
             QMessageBox.critical(self, "Eroare la export PDF", str(e))
+
+    def _show_doc_info(self):
+        """Show document information dialog with metadata about both documents."""
+        if not self._result:
+            return
+        dlg = DocumentInfoDialog(
+            self._result["path1"],
+            self._result["path2"],
+            parent=self,
+        )
+        dlg.exec_()
 
     def _sync_l2r(self, value: int):
         if not self._syncing:
