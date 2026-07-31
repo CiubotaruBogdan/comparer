@@ -390,8 +390,8 @@ def export_html_report(path1: str, path2: str, result: dict) -> str:
   <div class="stat"><div class="val">{stats["modified"]}</div><div class="lbl">MODIFICATE</div></div>
   <div class="stat"><div class="val">{stats["added"]}</div><div class="lbl">ADAUGATE</div></div>
   <div class="stat"><div class="val">{stats["deleted"]}</div><div class="lbl">STERSE</div></div>
-  <div class="stat"><div class="val">{stats["total_left"]}</div><div class="lbl">PAR. DOC 1</div></div>
-  <div class="stat"><div class="val">{stats["total_right"]}</div><div class="lbl">PAR. DOC 2</div></div>
+  <div class="stat"><div class="val">{stats["total_left"]}</div><div class="lbl">PARAGRAFE DOC 1</div></div>
+  <div class="stat"><div class="val">{stats["total_right"]}</div><div class="lbl">PARAGRAFE DOC 2</div></div>
 </div>
 <div class="cols">
   <div>
@@ -520,8 +520,8 @@ def export_pdf_report(path1: str, path2: str, result: dict, output_path: str):
         (str(stats["modified"]), "MODIFICATE"),
         (str(stats["added"]), "ADAUGATE"),
         (str(stats["deleted"]), "STERSE"),
-        (str(stats["total_left"]), "PAR. DOC 1"),
-        (str(stats["total_right"]), "PAR. DOC 2"),
+        (str(stats["total_left"]), "PARAGRAFE DOC 1"),
+        (str(stats["total_right"]), "PARAGRAFE DOC 2"),
     ]
     col_w = page_w / len(stats_data)
     y_stats = pdf.get_y()
@@ -784,7 +784,7 @@ class DocumentInfoDialog(QDialog):
 
     def __init__(self, path1: str, path2: str, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Informatii Documente")
+        self.setWindowTitle("Informatii documente")
         self.setMinimumSize(700, 520)
         self.setStyleSheet("background:#fff;")
         self._build_ui(path1, path2)
@@ -795,9 +795,9 @@ class DocumentInfoDialog(QDialog):
         layout.setSpacing(16)
 
         # Title
-        title = QLabel("Informatii Documente")
+        title = QLabel("Informatii documente")
         f = QFont()
-        f.setPointSize(14)
+        f.setPointSize(16)
         f.setWeight(QFont.DemiBold)
         title.setFont(f)
         title.setStyleSheet("color:#111;")
@@ -1415,7 +1415,6 @@ class CompareWindow(QMainWindow):
         self._setup_shortcuts()
 
     def _setup_shortcuts(self):
-        QShortcut(QKeySequence("Escape"), self, self._go_back)
         QShortcut(QKeySequence("Ctrl+E"), self, self._export_report)
         QShortcut(QKeySequence("Ctrl+P"), self, self._export_pdf)
         QShortcut(QKeySequence("Right"),  self, self._next_diff)
@@ -1577,12 +1576,10 @@ class CompareWindow(QMainWindow):
         lay.setContentsMargins(12, 0, 12, 0)
         lay.setSpacing(8)
 
-        back_btn        = _flat_btn("\u2190 Noua comparatie")
         self.swap_btn   = _flat_btn("\u21c4  Inverseaza")
         self.export_btn = _flat_btn("Exporta HTML")
         self.export_pdf_btn = _flat_btn("Exporta PDF")
-        self.info_btn   = _flat_btn("\u2139  Info documente")
-        back_btn.clicked.connect(self._go_back)
+        self.info_btn   = _flat_btn("\u2139  Informatii documente")
         self.swap_btn.clicked.connect(self._swap_and_recompare)
         self.export_btn.clicked.connect(self._export_report)
         self.export_pdf_btn.clicked.connect(self._export_pdf)
@@ -1609,22 +1606,6 @@ class CompareWindow(QMainWindow):
         self.right_name_lbl.setFont(f)
         self.right_name_lbl.setStyleSheet("color:#555;")
 
-        sim_lbl = QLabel("Similaritate")
-        sim_lbl.setFont(f)
-        sim_lbl.setStyleSheet("color:#999;")
-
-        self.sim_badge = QLabel("\u2014")
-        fb = QFont()
-        fb.setPointSize(11)
-        fb.setWeight(QFont.DemiBold)
-        self.sim_badge.setFont(fb)
-        self.sim_badge.setStyleSheet(
-            "color:#111; border:1px solid #CCC; border-radius:3px; padding:1px 10px;"
-        )
-        self.sim_badge.setAlignment(Qt.AlignCenter)
-        self.sim_badge.setMinimumWidth(72)
-
-        lay.addWidget(back_btn)
         lay.addWidget(self.swap_btn)
         lay.addSpacing(8)
         lay.addWidget(self.prev_diff_btn)
@@ -1632,10 +1613,6 @@ class CompareWindow(QMainWindow):
         lay.addWidget(self.next_diff_btn)
         lay.addSpacing(8)
         lay.addWidget(self.left_name_lbl)
-        lay.addStretch()
-        lay.addWidget(sim_lbl)
-        lay.addSpacing(4)
-        lay.addWidget(self.sim_badge)
         lay.addStretch()
         lay.addWidget(self.right_name_lbl)
         lay.addSpacing(12)
@@ -1685,8 +1662,8 @@ class CompareWindow(QMainWindow):
         (self.s_mod,     w_mod) = self._make_stat("MODIFICATE", "\u2014")
         (self.s_added,   w_add) = self._make_stat("ADAUGATE",   "\u2014")
         (self.s_deleted, w_del) = self._make_stat("STERSE",     "\u2014")
-        (self.s_tot1,    w_t1)  = self._make_stat("PAR. DOC 1", "\u2014")
-        (self.s_tot2,    w_t2)  = self._make_stat("PAR. DOC 2", "\u2014")
+        (self.s_tot1,    w_t1)  = self._make_stat("PARAGRAFE DOC 1", "\u2014")
+        (self.s_tot2,    w_t2)  = self._make_stat("PARAGRAFE DOC 2", "\u2014")
 
         legend = self._build_legend()
 
@@ -1843,7 +1820,6 @@ class CompareWindow(QMainWindow):
         sim_pct = f"{sim * 100:.1f}%"
 
         self.sim_big.setText(sim_pct)
-        self.sim_badge.setText(sim_pct)
         self.s_equal.setText(str(stats["equal"]))
         self.s_mod.setText(str(stats["modified"]))
         self.s_added.setText(str(stats["added"]))
