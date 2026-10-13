@@ -1,9 +1,17 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('icon.ico', '.'), ('icon.png', '.')]
+
+datas = [
+    ('icon.ico', '.'),
+    ('icon.png', '.'),
+    ('assets/fonts', 'assets/fonts'),
+]
 binaries = []
-hiddenimports = ['PyQt5', 'PyQt5.QtWidgets', 'PyQt5.QtCore', 'PyQt5.QtGui', 'fpdf', 'difflib', 'html', 'pathlib']
+hiddenimports = [
+    'PyQt5', 'PyQt5.QtWidgets', 'PyQt5.QtCore', 'PyQt5.QtGui',
+    'fpdf', 'difflib', 'html', 'pathlib', 'report_export',
+]
 tmp_ret = collect_all('fitz')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('docx')

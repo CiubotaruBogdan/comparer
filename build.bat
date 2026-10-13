@@ -1,43 +1,32 @@
 @echo off
+setlocal
 echo ============================================
 echo  Document Comparator - PyInstaller Build
 echo ============================================
 echo.
 
-:: Instaleaza dependentele daca nu sunt
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
+if errorlevel 1 goto :error
 
 echo.
 echo Se construieste executabilul...
 echo.
 
-pyinstaller ^
-    --noconfirm ^
-    --onefile ^
-    --windowed ^
-    --name "Comparer" ^
-    --icon "icon.ico" ^
-    --add-data "icon.ico;." ^
-    --add-data "icon.png;." ^
-    --collect-all fitz ^
-    --collect-all docx ^
-    --hidden-import PyQt5 ^
-    --hidden-import PyQt5.QtWidgets ^
-    --hidden-import PyQt5.QtCore ^
-    --hidden-import PyQt5.QtGui ^
-    --hidden-import fpdf ^
-    --hidden-import difflib ^
-    --hidden-import html ^
-    --hidden-import pathlib ^
-    main.py
+pyinstaller Comparer.spec --noconfirm --clean
+if errorlevel 1 goto :error
 
+if not exist "dist\Comparer.exe" goto :missing
 echo.
-if exist "dist\Comparer.exe" (
-    echo  Build reusit!
-    echo  Executabilul se afla in: dist\Comparer.exe
-) else (
-    echo  Build ESUAT. Verifica erorile de mai sus.
-)
+echo  Build reusit!
+echo  Executabilul se afla in: dist\Comparer.exe
+exit /b 0
 
+:missing
 echo.
-pause
+echo  Build ESUAT. Executabilul dist\Comparer.exe nu a fost creat.
+exit /b 1
+
+:error
+echo.
+echo  Build ESUAT. Verifica erorile de mai sus.
+exit /b 1

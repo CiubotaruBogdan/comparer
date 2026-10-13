@@ -8,7 +8,8 @@ export PDF/HTML, și vizualizare optimizată pentru documente mari.
 """
 
 import sys
-import difflib
+import os
+import tempfile
 import html as html_lib
 from pathlib import Path
 from typing import Optional
@@ -16,33 +17,72 @@ from datetime import datetime
 
 from notifications import UserFacingError, error_message, show_notification
 from romanian_qt import install_romanian_dialogs
+from document_core import (
+    _iter_block_texts,
+    read_document,
+    compare_documents,
+    ComparisonCancelled,
+)
+from report_export import export_html_report, export_pdf_report, ExportCancelled
 
 from docx import Document as DocxDocument
-from docx.oxml.ns import qn
-from docx.text.paragraph import Paragraph as DocxParagraph
 import fitz  # PyMuPDF
 
 if sys.platform == "win32":
     import ctypes
+
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Comparer.1.3")
 
 from PyQt5.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QPushButton, QSplitter, QFrame,
-    QFileDialog, QStackedWidget, QMessageBox, QSizePolicy, QProgressBar,
-    QShortcut, QScrollArea, QAbstractScrollArea, QStyleOptionViewItem,
-    QStyledItemDelegate, QListView, QDialog, QGroupBox, QGridLayout,
-    QTextBrowser,
+    QApplication,
+    QMainWindow,
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QSplitter,
+    QFrame,
+    QFileDialog,
+    QStackedWidget,
+    QMessageBox,
+    QSizePolicy,
+    QProgressBar,
+    QShortcut,
+    QStyleOptionViewItem,
+    QStyledItemDelegate,
+    QListView,
+    QDialog,
+    QGroupBox,
+    QGridLayout,
+    QAbstractItemView,
+    QCheckBox,
+    QLineEdit,
+    QSpinBox,
 )
 from PyQt5.QtCore import (
-    Qt, pyqtSignal, QThread, pyqtSlot, QTimer, QAbstractListModel,
-    QModelIndex, QSize, QRect, QPoint,
+    Qt,
+    pyqtSignal,
+    QThread,
+    pyqtSlot,
+    QTimer,
+    QAbstractListModel,
+    QModelIndex,
+    QSize,
+    QRect,
+    QSettings,
 )
 from PyQt5.QtGui import (
-    QFont, QColor, QPalette, QIcon, QKeySequence, QPainter,
-    QTextDocument, QAbstractTextDocumentLayout, QPen, QBrush,
-    QFontMetrics,
+    QFont,
+    QColor,
+    QPalette,
+    QIcon,
+    QKeySequence,
+    QPainter,
+    QTextDocument,
+    QAbstractTextDocumentLayout,
 )
+
 # QPrinter no longer needed - PDF export uses fpdf2 directly
 
 
@@ -63,90 +103,6 @@ def _load_icon() -> QIcon:
 # ══════════════════════════════════════════════════════════════════════════════
 # 1. Document Readers
 # ══════════════════════════════════════════════════════════════════════════════
-
-def _iter_block_texts(element, doc: DocxDocument) -> list:
-    texts = []
-    for child in element.iterchildren():
-        tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
-        if tag == "p":
-            text = DocxParagraph(child, doc).text.strip()
-            if text:
-                texts.append(text)
-        elif tag == "tbl":
-            for tr in child.findall(qn("w:tr")):
-                for tc in tr.findall(qn("w:tc")):
-                    texts.extend(_iter_block_texts(tc, doc))
-    return texts
-
-
-def _iter_header_footer_texts(doc: DocxDocument) -> list:
-    """Extract text from all headers and footers in the document (deduplicated)."""
-    seen = set()
-    texts = []
-    for section in doc.sections:
-        for header in (section.header, section.first_page_header, section.even_page_header):
-            if header is not None and not header.is_linked_to_previous:
-                for para in header.paragraphs:
-                    text = para.text.strip()
-                    if text and text not in seen:
-                        seen.add(text)
-                        texts.append(f"[HEADER] {text}")
-        for footer in (section.footer, section.first_page_footer, section.even_page_footer):
-            if footer is not None and not footer.is_linked_to_previous:
-                for para in footer.paragraphs:
-                    text = para.text.strip()
-                    if text and text not in seen:
-                        seen.add(text)
-                        texts.append(f"[FOOTER] {text}")
-    # Fallback: if all are linked (single section doc), read the main header/footer
-    if not texts:
-        for section in doc.sections:
-            for header in (section.header,):
-                if header is not None:
-                    for para in header.paragraphs:
-                        text = para.text.strip()
-                        if text and text not in seen:
-                            seen.add(text)
-                            texts.append(f"[HEADER] {text}")
-            for footer in (section.footer,):
-                if footer is not None:
-                    for para in footer.paragraphs:
-                        text = para.text.strip()
-                        if text and text not in seen:
-                            seen.add(text)
-                            texts.append(f"[FOOTER] {text}")
-    return texts
-
-
-def read_docx(path: str) -> list:
-    doc = DocxDocument(path)
-    header_footer_texts = _iter_header_footer_texts(doc)
-    body_texts = _iter_block_texts(doc.element.body, doc)
-    return header_footer_texts + body_texts
-
-
-def read_pdf(path: str) -> list:
-    paragraphs = []
-    with fitz.open(path) as doc:
-        for page in doc:
-            blocks = page.get_text("blocks")
-            blocks_sorted = sorted(blocks, key=lambda b: (round(b[1] / 12) * 12, b[0]))
-            for block in blocks_sorted:
-                if len(block) > 6 and block[6] == 0:
-                    text = " ".join(block[4].split())
-                    if len(text) > 3:
-                        paragraphs.append(text)
-    return paragraphs
-
-
-def read_document(path: str) -> list:
-    ext = Path(path).suffix.lower()
-    if ext == ".docx":
-        return read_docx(path)
-    elif ext == ".pdf":
-        return read_pdf(path)
-    else:
-        raise UserFacingError(f"Format neacceptat: {ext}\nSunt acceptate fișierele .docx și .pdf.")
 
 
 def validate_same_type(path1: str, path2: str) -> Optional[str]:
@@ -169,497 +125,29 @@ def validate_same_type(path1: str, path2: str) -> Optional[str]:
 # 2. Motor de comparație
 # ══════════════════════════════════════════════════════════════════════════════
 
-def word_level_diff(text1: str, text2: str):
-    words1 = text1.split()
-    words2 = text2.split()
-    matcher = difflib.SequenceMatcher(None, words1, words2, autojunk=False)
-
-    left_parts = []
-    right_parts = []
-
-    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
-        w1 = html_lib.escape(" ".join(words1[i1:i2]))
-        w2 = html_lib.escape(" ".join(words2[j1:j2]))
-
-        if tag == "equal":
-            left_parts.append(w1)
-            right_parts.append(w1)
-        elif tag == "replace":
-            left_parts.append(
-                f'<span style="background:#FFCDD2;text-decoration:line-through;'
-                f'border-radius:2px;padding:0 2px;">{w1}</span>'
-            )
-            right_parts.append(
-                f'<span style="background:#C8E6C9;border-radius:2px;padding:0 2px;">{w2}</span>'
-            )
-        elif tag == "delete":
-            left_parts.append(
-                f'<span style="background:#FFCDD2;text-decoration:line-through;'
-                f'border-radius:2px;padding:0 2px;">{w1}</span>'
-            )
-        elif tag == "insert":
-            right_parts.append(
-                f'<span style="background:#C8E6C9;border-radius:2px;padding:0 2px;">{w2}</span>'
-            )
-
-    return " ".join(left_parts), " ".join(right_parts)
-
-
-def compare_documents(paras1: list, paras2: list) -> dict:
-    matcher = difflib.SequenceMatcher(None, paras1, paras2, autojunk=False)
-    similarity = matcher.ratio()
-
-    left_blocks = []
-    right_blocks = []
-
-    stats = {
-        "total_left":  len(paras1),
-        "total_right": len(paras2),
-        "equal":    0,
-        "modified": 0,
-        "added":    0,
-        "deleted":  0,
-    }
-
-    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
-        if tag == "equal":
-            for k in range(i2 - i1):
-                left_blocks.append(("equal", paras1[i1 + k], False))
-                right_blocks.append(("equal", paras2[j1 + k], False))
-                stats["equal"] += 1
-
-        elif tag == "replace":
-            lp = paras1[i1:i2]
-            rp = paras2[j1:j2]
-            common = min(len(lp), len(rp))
-            stats["modified"] += common
-            stats["deleted"]  += len(lp) - common
-            stats["added"]    += len(rp) - common
-
-            for k in range(max(len(lp), len(rp))):
-                has_l = k < len(lp)
-                has_r = k < len(rp)
-                if has_l and has_r:
-                    lh, rh = word_level_diff(lp[k], rp[k])
-                    left_blocks.append(("replace", lh, True))
-                    right_blocks.append(("replace", rh, True))
-                elif has_l:
-                    left_blocks.append(("delete", lp[k], False))
-                    right_blocks.append(("placeholder", "", False))
-                else:
-                    left_blocks.append(("placeholder", "", False))
-                    right_blocks.append(("insert", rp[k], False))
-
-        elif tag == "delete":
-            for k in range(i2 - i1):
-                left_blocks.append(("delete", paras1[i1 + k], False))
-                right_blocks.append(("placeholder", "", False))
-                stats["deleted"] += 1
-
-        elif tag == "insert":
-            for k in range(j2 - j1):
-                left_blocks.append(("placeholder", "", False))
-                right_blocks.append(("insert", paras2[j1 + k], False))
-                stats["added"] += 1
-
-    diff_positions = []
-    in_diff = False
-    for i in range(len(left_blocks)):
-        ls = left_blocks[i][0]
-        rs = right_blocks[i][0]
-        is_diff = ls not in ("equal", "placeholder") or rs not in ("equal", "placeholder")
-        if is_diff and not in_diff:
-            diff_positions.append(i)
-        in_diff = is_diff
-
-    return {
-        "similarity":    similarity,
-        "left_blocks":   left_blocks,
-        "right_blocks":  right_blocks,
-        "diff_positions": diff_positions,
-        "stats":         stats,
-        "diff_count":    len(diff_positions),
-    }
-
-
-def render_html(
-    blocks: list,
-    side: str,
-    diff_positions: list = None,
-    padding_y: int = 7,
-    interactive: bool = False,
-) -> str:
-    """Generates HTML for export reports only."""
-    STYLE = {
-        "equal":       ("#FFFFFF", "#E0E0E0", "3px solid"),
-        "replace":     ("#FFECB3", "#FFB300", "3px solid"),
-        "delete":      ("#FFCDD2", "#E53935", "3px solid"),
-        "insert":      ("#C8E6C9", "#43A047", "3px solid"),
-        "placeholder": ("#F9F9F9", "#EEEEEE", "3px dotted"),
-    }
-    BADGE = {
-        "delete": ('<span style="font-size:9px;background:#E53935;color:#fff;'
-                   'padding:1px 6px;border-radius:2px;margin-right:6px;">STERS</span>'),
-        "insert": ('<span style="font-size:9px;background:#43A047;color:#fff;'
-                   'padding:1px 6px;border-radius:2px;margin-right:6px;">NOU</span>'),
-    }
-
-    anchor_map: dict = {}
-    if diff_positions:
-        for group_idx, block_idx in enumerate(diff_positions):
-            anchor_map[block_idx] = group_idx
-
-    lines = [
-        '<!DOCTYPE html><html>',
-        '<head><meta charset="utf-8"></head>',
-        '<body style="font-family:system-ui,Arial,sans-serif;font-size:13px;'
-        'line-height:1.55;margin:0;padding:6px;background:#FAFAFA;color:#111;">',
-    ]
-
-    for block_idx, (status, content, is_html) in enumerate(blocks):
-        bg, bl_color, bl_width = STYLE.get(status, STYLE["equal"])
-
-        anchor = ""
-        if block_idx in anchor_map:
-            anchor = f'<a name="diff-{anchor_map[block_idx]}"></a>'
-
-        badge = ""
-        if status == "delete" and side == "left":
-            badge = BADGE["delete"]
-        elif status == "insert" and side == "right":
-            badge = BADGE["insert"]
-
-        if status == "placeholder":
-            inner = ""
-        elif is_html:
-            inner = f"{badge}<span>{content}</span>"
-        else:
-            inner = f"{badge}<span>{html_lib.escape(content)}</span>"
-
-        body = f"{anchor}{inner}"
-        lines.append(
-            f'<div style="background:{bg};border-left:{bl_width} {bl_color};'
-            f'margin:2px 0;padding:{padding_y}px 10px;'
-            f'border-radius:0 2px 2px 0;min-height:22px;overflow:hidden;">'
-            f'{body}</div>'
-        )
-
-    lines.append('</body></html>')
-    return "\n".join(lines)
-
-
-def export_html_report(path1: str, path2: str, result: dict) -> str:
-    sim   = result["similarity"]
-    stats = result["stats"]
-    n1 = html_lib.escape(Path(path1).name)
-    n2 = html_lib.escape(Path(path2).name)
-    export_l = render_html(result["left_blocks"],  "left",  result["diff_positions"])
-    export_r = render_html(result["right_blocks"], "right", result["diff_positions"])
-    body_l = export_l.split("<body", 1)[1].split(">", 1)[1].rsplit("</body>", 1)[0]
-    body_r = export_r.split("<body", 1)[1].split(">", 1)[1].rsplit("</body>", 1)[0]
-
-    return f"""<!DOCTYPE html>
-<html lang="ro">
-<head>
-<meta charset="utf-8">
-<title>Comparatie — {n1} vs {n2}</title>
-<style>
-  *   {{ box-sizing:border-box; margin:0; padding:0; }}
-  body {{ font-family:system-ui,Arial,sans-serif; background:#fff; color:#111; }}
-  .hdr {{ background:#111; color:#fff; padding:14px 24px; }}
-  .hdr h1 {{ font-size:16px; font-weight:600; }}
-  .hdr p  {{ font-size:11px; color:#aaa; margin-top:3px; }}
-  .stats  {{ background:#F4F4F4; border-bottom:1px solid #ddd;
-             padding:10px 24px; display:flex; gap:28px; align-items:center; flex-wrap:wrap; }}
-  .stat .val {{ font-size:20px; font-weight:700; }}
-  .stat .lbl {{ font-size:9px; color:#777; letter-spacing:.5px; }}
-  .sim        {{ font-size:32px; font-weight:700; }}
-  .cols       {{ display:grid; grid-template-columns:1fr 1fr; }}
-  .col-hdr    {{ background:#222; color:#fff; padding:7px 12px;
-                font-size:11px; font-weight:600; letter-spacing:.3px; }}
-  .col-body   {{ padding:6px; background:#fff; min-height:80vh;
-                border-right:1px solid #ddd; }}
-</style>
-</head>
-<body>
-<div class="hdr">
-  <h1>Raport Comparatie Documente</h1>
-  <p>{n1} &nbsp;&#x27F7;&nbsp; {n2}</p>
-</div>
-<div class="stats">
-  <div class="stat"><div class="sim">{sim*100:.1f}%</div><div class="lbl">SIMILARITATE</div></div>
-  <div style="width:1px;background:#ccc;height:36px;"></div>
-  <div class="stat"><div class="val">{stats["equal"]}</div><div class="lbl">IDENTICE</div></div>
-  <div class="stat"><div class="val">{stats["modified"]}</div><div class="lbl">MODIFICATE</div></div>
-  <div class="stat"><div class="val">{stats["added"]}</div><div class="lbl">ADAUGATE</div></div>
-  <div class="stat"><div class="val">{stats["deleted"]}</div><div class="lbl">STERSE</div></div>
-  <div class="stat"><div class="val">{stats["total_left"]}</div><div class="lbl">PARAGRAFE DOC 1</div></div>
-  <div class="stat"><div class="val">{stats["total_right"]}</div><div class="lbl">PARAGRAFE DOC 2</div></div>
-</div>
-<div class="cols">
-  <div>
-    <div class="col-hdr">Document 1 — Baza: {n1}</div>
-    <div class="col-body">{body_l}</div>
-  </div>
-  <div>
-    <div class="col-hdr">Document 2 — Comparatie: {n2}</div>
-    <div class="col-body">{body_r}</div>
-  </div>
-</div>
-</body></html>"""
-
 
 import re as _re
 import os as _os
-from fpdf import FPDF as _FPDF
-
-
-def _find_system_font(name: str, bold: bool = False) -> str:
-    """Find a TrueType font file on the system (Windows/Linux)."""
-    suffix = 'bd' if bold else ''
-    candidates = []
-    if sys.platform == 'win32':
-        windir = _os.environ.get('WINDIR', r'C:\Windows')
-        fonts_dir = _os.path.join(windir, 'Fonts')
-        candidates = [
-            _os.path.join(fonts_dir, f'{name.lower()}{suffix}.ttf'),
-            _os.path.join(fonts_dir, f'{name}{suffix}.ttf'),
-        ]
-    else:
-        # Linux fallback paths
-        for base in ['/usr/share/fonts', '/usr/local/share/fonts']:
-            for root, dirs, files in _os.walk(base):
-                for f in files:
-                    if f.lower().startswith(name.lower()) and f.endswith('.ttf'):
-                        if bold and ('bold' in f.lower() or 'Bold' in f):
-                            candidates.append(_os.path.join(root, f))
-                        elif not bold and 'bold' not in f.lower():
-                            candidates.append(_os.path.join(root, f))
-    for c in candidates:
-        if _os.path.isfile(c):
-            return c
-    return ""
 
 
 def _strip_html_tags(text: str) -> str:
     """Remove HTML tags and decode common entities to get plain text."""
-    clean = _re.sub(r'<[^>]+>', '', text)
-    clean = (clean.replace('&lt;', '<').replace('&gt;', '>')
-             .replace('&amp;', '&').replace('&nbsp;', ' ')
-             .replace('&#x27;', "'").replace('&quot;', '"'))
+    clean = _re.sub(r"<[^>]+>", "", text)
+    clean = (
+        clean.replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&")
+        .replace("&nbsp;", " ")
+        .replace("&#x27;", "'")
+        .replace("&quot;", '"')
+    )
     return clean.strip()
-
-
-def _hex_to_rgb(hex_color: str) -> tuple:
-    h = hex_color.lstrip('#')
-    return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
-
-
-def export_pdf_report(path1: str, path2: str, result: dict, output_path: str):
-    """Generate a PDF report directly using fpdf2 (no HTML intermediary)."""
-    sim = result["similarity"]
-    stats = result["stats"]
-    n1 = Path(path1).name
-    n2 = Path(path2).name
-    now = datetime.now().strftime("%d.%m.%Y  %H:%M:%S")
-
-    left_blocks = result["left_blocks"]
-    right_blocks = result["right_blocks"]
-
-    BG_COLORS = {
-        "equal":       "#FFFFFF",
-        "replace":     "#FFECB3",
-        "delete":      "#FFCDD2",
-        "insert":      "#C8E6C9",
-        "placeholder": "#F5F5F5",
-    }
-    BORDER_COLORS = {
-        "equal":       "#E0E0E0",
-        "replace":     "#FFB300",
-        "delete":      "#E53935",
-        "insert":      "#43A047",
-        "placeholder": "#EEEEEE",
-    }
-
-    pdf = _FPDF()
-    pdf.set_auto_page_break(True, margin=12)
-
-    # Register system font (Arial on Windows, DejaVuSans on Linux as fallback)
-    font_regular = _find_system_font('arial', bold=False)
-    font_bold = _find_system_font('arial', bold=True)
-    # Fallback to DejaVuSans on Linux if Arial not available
-    if not font_regular:
-        font_regular = _find_system_font('DejaVuSans', bold=False)
-        font_bold = _find_system_font('DejaVuSans', bold=True)
-    _font = 'Helvetica'  # fallback (built-in, ASCII only)
-    if font_regular:
-        pdf.add_font('F', '', font_regular)
-        if font_bold:
-            pdf.add_font('F', 'B', font_bold)
-        else:
-            pdf.add_font('F', 'B', font_regular)
-        _font = 'F'
-
-    pdf.add_page()
-    page_w = pdf.w - 20  # usable width (margins 10 each side)
-    half_w = page_w / 2
-
-    # ── Title ──
-    pdf.set_font(_font, 'B', 13)
-    pdf.set_text_color(17, 17, 17)
-    pdf.cell(0, 9, f'Documente comparate: {n1}, {n2}',
-             new_x='LMARGIN', new_y='NEXT', align='C')
-
-    # ── Subtitle (date) ──
-    pdf.set_font(_font, '', 9)
-    pdf.set_text_color(100, 100, 100)
-    pdf.cell(0, 6, f'Data raport: {now}', new_x='LMARGIN', new_y='NEXT', align='C')
-    pdf.ln(5)
-
-    # ── Statistics row ──
-    stats_data = [
-        (f"{sim*100:.1f}%", "SIMILARITATE"),
-        (str(stats["equal"]), "IDENTICE"),
-        (str(stats["modified"]), "MODIFICATE"),
-        (str(stats["added"]), "ADAUGATE"),
-        (str(stats["deleted"]), "STERSE"),
-        (str(stats["total_left"]), "PARAGRAFE DOC 1"),
-        (str(stats["total_right"]), "PARAGRAFE DOC 2"),
-    ]
-    col_w = page_w / len(stats_data)
-    y_stats = pdf.get_y()
-
-    # Draw stat values
-    pdf.set_font(_font, 'B', 11)
-    pdf.set_text_color(17, 17, 17)
-    for i, (val, _) in enumerate(stats_data):
-        pdf.set_xy(10 + i * col_w, y_stats)
-        pdf.cell(col_w, 7, val, align='C')
-
-    # Draw stat labels
-    pdf.set_font(_font, '', 6)
-    pdf.set_text_color(120, 120, 120)
-    for i, (_, lbl) in enumerate(stats_data):
-        pdf.set_xy(10 + i * col_w, y_stats + 7)
-        pdf.cell(col_w, 4, lbl, align='C')
-
-    pdf.set_y(y_stats + 14)
-    pdf.ln(3)
-
-    # ── Table header ──
-    pdf.set_fill_color(34, 34, 34)
-    pdf.set_text_color(255, 255, 255)
-    pdf.set_font(_font, 'B', 8)
-    pdf.cell(half_w, 7, f'  Document 1 \u2014 Baza: {n1}', fill=True)
-    pdf.cell(half_w, 7, f'  Document 2 \u2014 Comparatie: {n2}',
-             fill=True, new_x='LMARGIN', new_y='NEXT')
-
-    # ── Table rows ──
-    pdf.set_text_color(0, 0, 0)
-    LINE_H = 3.8
-    CELL_PAD = 1.5
-
-    def _draw_table_header():
-        pdf.set_fill_color(34, 34, 34)
-        pdf.set_text_color(255, 255, 255)
-        pdf.set_font(_font, 'B', 8)
-        pdf.cell(half_w, 7, f'  Document 1 \u2014 Baza: {n1}', fill=True)
-        pdf.cell(half_w, 7, f'  Document 2 \u2014 Comparatie: {n2}',
-                 fill=True, new_x='LMARGIN', new_y='NEXT')
-        pdf.set_text_color(0, 0, 0)
-
-    def _measure_text_height(text, width):
-        """Calculate the height a multi_cell would occupy without drawing."""
-        pdf.set_font(_font, '', 8)
-        lines = pdf.multi_cell(width, LINE_H, text or " ",
-                               border=0, align='L', dry_run=True, output='LINES')
-        return max(len(lines) * LINE_H, LINE_H)
-
-    for idx in range(len(left_blocks)):
-        l_status, l_content, l_is_html = left_blocks[idx]
-        r_status, r_content, r_is_html = right_blocks[idx]
-
-        # Get plain text (strip HTML highlighting)
-        l_text = _strip_html_tags(l_content) if l_is_html else l_content
-        r_text = _strip_html_tags(r_content) if r_is_html else r_content
-        if l_status == "placeholder":
-            l_text = ""
-        if r_status == "placeholder":
-            r_text = ""
-
-        # Add status prefix for deleted/inserted
-        if l_status == "delete":
-            l_text = "[STERS] " + l_text
-        if r_status == "insert":
-            r_text = "[NOU] " + r_text
-
-        # Calculate row height without drawing (dry_run)
-        l_height = _measure_text_height(l_text, half_w - 6)
-        r_height = _measure_text_height(r_text, half_w - 6)
-        row_h = max(l_height, r_height) + CELL_PAD * 2
-        row_h = max(row_h, 6)
-
-        y_before = pdf.get_y()
-
-        # Page break check
-        if y_before + row_h > pdf.h - 12:
-            pdf.add_page()
-            _draw_table_header()
-            y_before = pdf.get_y()
-
-        # Draw cell backgrounds
-        l_bg = _hex_to_rgb(BG_COLORS.get(l_status, "#FFFFFF"))
-        r_bg = _hex_to_rgb(BG_COLORS.get(r_status, "#FFFFFF"))
-        pdf.set_fill_color(*l_bg)
-        pdf.rect(10, y_before, half_w, row_h, 'F')
-        pdf.set_fill_color(*r_bg)
-        pdf.rect(10 + half_w, y_before, half_w, row_h, 'F')
-
-        # Draw left accent border
-        l_bc = _hex_to_rgb(BORDER_COLORS.get(l_status, "#E0E0E0"))
-        r_bc = _hex_to_rgb(BORDER_COLORS.get(r_status, "#E0E0E0"))
-        pdf.set_draw_color(*l_bc)
-        pdf.set_line_width(0.6)
-        pdf.line(10, y_before, 10, y_before + row_h)
-        pdf.set_draw_color(*r_bc)
-        pdf.line(10 + half_w, y_before, 10 + half_w, y_before + row_h)
-
-        # Draw bottom separator
-        pdf.set_draw_color(220, 220, 220)
-        pdf.set_line_width(0.15)
-        pdf.line(10, y_before + row_h, pdf.w - 10, y_before + row_h)
-
-        # Draw text
-        pdf.set_font(_font, '', 8)
-
-        if l_status == "delete":
-            pdf.set_text_color(180, 30, 30)
-        elif l_status == "replace":
-            pdf.set_text_color(50, 50, 50)
-        else:
-            pdf.set_text_color(17, 17, 17)
-        pdf.set_xy(12, y_before + CELL_PAD)
-        if l_text:
-            pdf.multi_cell(half_w - 6, LINE_H, l_text, border=0, align='L')
-
-        if r_status == "insert":
-            pdf.set_text_color(30, 120, 30)
-        elif r_status == "replace":
-            pdf.set_text_color(50, 50, 50)
-        else:
-            pdf.set_text_color(17, 17, 17)
-        pdf.set_xy(10 + half_w + 2, y_before + CELL_PAD)
-        if r_text:
-            pdf.multi_cell(half_w - 6, LINE_H, r_text, border=0, align='L')
-
-        pdf.set_y(y_before + row_h)
-
-    pdf.output(output_path)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 2b. Extragere metadate documente
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 def get_document_metadata(path: str) -> dict:
     """Extract metadata (author, creation date, modification date, etc.) from a document."""
@@ -694,7 +182,9 @@ def get_document_metadata(path: str) -> dict:
     # File system modification time
     try:
         mtime = _os.path.getmtime(path)
-        meta["file_modified"] = datetime.fromtimestamp(mtime).strftime("%d.%m.%Y  %H:%M:%S")
+        meta["file_modified"] = datetime.fromtimestamp(mtime).strftime(
+            "%d.%m.%Y  %H:%M:%S"
+        )
     except OSError:
         meta["file_modified"] = ""
 
@@ -706,8 +196,12 @@ def get_document_metadata(path: str) -> dict:
             props = doc.core_properties
             meta["author"] = props.author or ""
             meta["last_modified_by"] = props.last_modified_by or ""
-            meta["created"] = props.created.strftime("%d.%m.%Y  %H:%M:%S") if props.created else ""
-            meta["modified"] = props.modified.strftime("%d.%m.%Y  %H:%M:%S") if props.modified else ""
+            meta["created"] = (
+                props.created.strftime("%d.%m.%Y  %H:%M:%S") if props.created else ""
+            )
+            meta["modified"] = (
+                props.modified.strftime("%d.%m.%Y  %H:%M:%S") if props.modified else ""
+            )
             meta["revision"] = str(props.revision) if props.revision else ""
             meta["title"] = props.title or ""
             meta["subject"] = props.subject or ""
@@ -718,12 +212,16 @@ def get_document_metadata(path: str) -> dict:
             # Page count (from extended properties if available)
             try:
                 from docx.opc.constants import RELATIONSHIP_TYPE as RT
+
                 app_part = doc.part.package.part_related_by(RT.EXTENDED_PROPERTIES)
                 if app_part is not None:
                     from lxml import etree
-                    app_xml = app_part._element
-                    ns = {'ep': 'http://schemas.openxmlformats.org/officeDocument/2006/extended-properties'}
-                    pages_el = app_xml.find('.//ep:Pages', ns)
+
+                    app_xml = etree.fromstring(app_part.blob)
+                    ns = {
+                        "ep": "http://schemas.openxmlformats.org/officeDocument/2006/extended-properties"
+                    }
+                    pages_el = app_xml.find(".//ep:Pages", ns)
                     if pages_el is not None and pages_el.text:
                         meta["pages"] = pages_el.text
             except Exception:
@@ -769,7 +267,7 @@ def _parse_pdf_date(date_str: str) -> str:
     # Remove timezone info
     for sep in ("+", "-", "Z"):
         if sep in s[8:]:
-            s = s[:s.index(sep, 8)]
+            s = s[: s.index(sep, 8)]
     try:
         if len(s) >= 14:
             dt = datetime.strptime(s[:14], "%Y%m%d%H%M%S")
@@ -812,10 +310,10 @@ class DocumentInfoDialog(QDialog):
         meta2 = get_document_metadata(path2)
 
         # Document 1 group
-        layout.addWidget(self._build_doc_group("Document 1 (Baza)", meta1))
+        layout.addWidget(self._build_doc_group("Document 1 (Bază)", meta1))
 
         # Document 2 group
-        layout.addWidget(self._build_doc_group("Document 2 (Comparatie)", meta2))
+        layout.addWidget(self._build_doc_group("Document 2 (Comparație)", meta2))
 
         # Close button
         close_btn = QPushButton("Închide")
@@ -865,7 +363,7 @@ class DocumentInfoDialog(QDialog):
         grid.setColumnMinimumWidth(0, 140)
 
         rows = [
-            ("Nume fisier:", meta.get("file_name", "")),
+            ("Nume fișier:", meta.get("file_name", "")),
             ("Format:", meta.get("format", "")),
             ("Dimensiune:", meta.get("file_size", "")),
             ("Pagini:", meta.get("pages", "")),
@@ -875,7 +373,7 @@ class DocumentInfoDialog(QDialog):
             ("Autor (creare):", meta.get("author", "")),
             ("Ultima editare de:", meta.get("last_modified_by", "")),
             ("Data creare:", meta.get("created", "")),
-            ("Data ultima editare:", meta.get("modified", "")),
+            ("Data ultimei editări:", meta.get("modified", "")),
             ("Revizie:", meta.get("revision", "")),
             ("Modificat pe disc:", meta.get("file_modified", "")),
         ]
@@ -896,7 +394,9 @@ class DocumentInfoDialog(QDialog):
 
         if row_idx == 0:
             no_data = QLabel("Nu s-au putut extrage informații din acest document.")
-            no_data.setStyleSheet("color:#999; font-size:10px; font-style:italic; font-weight:normal;")
+            no_data.setStyleSheet(
+                "color:#999; font-size:10px; font-style:italic; font-weight:normal;"
+            )
             grid.addWidget(no_data, 0, 0, 1, 2)
 
         return group
@@ -906,53 +406,130 @@ class DocumentInfoDialog(QDialog):
 # 3. Thread de lucru
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class CompareWorker(QThread):
     finished = pyqtSignal(dict)
-    error    = pyqtSignal(str, str)
+    error = pyqtSignal(str, str)
     progress = pyqtSignal(str)
+    settled = pyqtSignal()
 
-    def __init__(self, path1: str, path2: str):
+    def __init__(self, path1, path2, options=None):
         super().__init__()
-        self.path1 = path1
-        self.path2 = path2
+        self.path1, self.path2 = path1, path2
+        self.options = options or {}
 
     def run(self):
         try:
             self.progress.emit("Se citește documentul 1...")
-            paras1 = read_document(self.path1)
+            paras1 = read_document(self.path1, cancel=self.isInterruptionRequested)
+            if self.isInterruptionRequested():
+                return
             self.progress.emit("Se citește documentul 2...")
-            paras2 = read_document(self.path2)
-
-            if not paras1:
-                self.error.emit(
-                    "Nu s-au putut extrage paragrafe din documentul 1.\n"
-                    "Verificați dacă fișierul conține text și nu este scanat (imagine).",
-                    "",
-                )
+            paras2 = read_document(self.path2, cancel=self.isInterruptionRequested)
+            for number, paragraphs in ((1, paras1), (2, paras2)):
+                if not paragraphs:
+                    self.error.emit(
+                        f"Nu s-au putut extrage paragrafe din documentul {number}.\n"
+                        "Verificați dacă fișierul conține text și nu este scanat (imagine).",
+                        "",
+                    )
+                    return
+            if self.isInterruptionRequested():
                 return
-            if not paras2:
-                self.error.emit(
-                    "Nu s-au putut extrage paragrafe din documentul 2.\n"
-                    "Verificați dacă fișierul conține text și nu este scanat (imagine).",
-                    "",
-                )
-                return
-
             self.progress.emit("Se compară documentele...")
-            result = compare_documents(paras1, paras2)
-            result["path1"] = self.path1
-            result["path2"] = self.path2
-            self.finished.emit(result)
-        except Exception as e:
-            self.error.emit(
-                error_message(e, "Comparația nu a putut fi finalizată. Verificați documentele și încercați din nou."),
-                str(e) if not isinstance(e, UserFacingError) else "",
+            result = compare_documents(
+                paras1,
+                paras2,
+                options=self.options,
+                cancel=self.isInterruptionRequested,
             )
+            if not self.isInterruptionRequested():
+                result.update(
+                    path1=self.path1, path2=self.path2, options=dict(self.options)
+                )
+                self.finished.emit(result)
+        except ComparisonCancelled:
+            pass
+        except Exception as error:
+            if not self.isInterruptionRequested():
+                self.error.emit(
+                    error_message(
+                        error,
+                        "Comparația nu a putut fi finalizată. Verificați documentele și încercați din nou.",
+                    ),
+                    str(error) if not isinstance(error, UserFacingError) else "",
+                )
+        finally:
+            self.settled.emit()
+
+
+class ExportWorker(QThread):
+    completed = pyqtSignal(str, str)
+    error = pyqtSignal(str, str, str)
+    progress = pyqtSignal(str)
+
+    def __init__(self, format_name, path, result):
+        super().__init__()
+        self.format_name, self.path, self.result = format_name, path, result
+
+    def run(self):
+        temporary = None
+        try:
+            if self.isInterruptionRequested():
+                return
+            self.progress.emit(f"Se exportă raportul {self.format_name}...")
+            fd, temporary = tempfile.mkstemp(
+                prefix=".comparer-", suffix=".tmp", dir=str(Path(self.path).parent)
+            )
+            os.close(fd)
+            if self.format_name == "HTML":
+                content = export_html_report(
+                    self.result["path1"],
+                    self.result["path2"],
+                    self.result,
+                    progress=self.progress.emit,
+                    cancelled=self.isInterruptionRequested,
+                )
+                with open(temporary, "w", encoding="utf-8") as output:
+                    output.write(content)
+            else:
+                export_pdf_report(
+                    self.result["path1"],
+                    self.result["path2"],
+                    self.result,
+                    temporary,
+                    progress=self.progress.emit,
+                    cancelled=self.isInterruptionRequested,
+                )
+            if self.isInterruptionRequested():
+                return
+            os.replace(temporary, self.path)
+            temporary = None
+            self.completed.emit(self.format_name, self.path)
+        except ExportCancelled:
+            pass
+        except Exception as error:
+            if not self.isInterruptionRequested():
+                self.error.emit(
+                    self.format_name,
+                    error_message(
+                        error,
+                        f"Raportul {self.format_name} nu a putut fi salvat. Verificați locația aleasă și încercați din nou.",
+                    ),
+                    str(error),
+                )
+        finally:
+            if temporary and os.path.exists(temporary):
+                try:
+                    os.unlink(temporary)
+                except OSError:
+                    pass
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 4. DropZone widget
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 class DropZone(QFrame):
     file_loaded = pyqtSignal(str)
@@ -1067,8 +644,10 @@ class DropZone(QFrame):
 
     def _browse(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, f"Selectează {self._title}",
-            self._last_dir, "Documente (*.docx *.pdf);;Word (*.docx);;PDF (*.pdf)"
+            self,
+            f"Selectează {self._title}",
+            self._last_dir,
+            "Documente (*.docx *.pdf);;Word (*.docx);;PDF (*.pdf)",
         )
         if path:
             self._set_file(path)
@@ -1130,6 +709,7 @@ class DropZone(QFrame):
 # 5. Virtualized ComparePanel (memory-efficient for large documents)
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class BlockListModel(QAbstractListModel):
     """
     Model that holds block data (status, content, is_html, side) without
@@ -1139,7 +719,7 @@ class BlockListModel(QAbstractListModel):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._blocks: list = []   # list of (status, content, is_html)
+        self._blocks: list = []  # list of (status, content, is_html)
         self._side: str = "left"
         self._selected_idx: int = -1
 
@@ -1188,17 +768,17 @@ class BlockDelegate(QStyledItemDelegate):
     """
 
     _BG = {
-        "equal":       QColor("#FFFFFF"),
-        "replace":     QColor("#FFECB3"),
-        "delete":      QColor("#FFCDD2"),
-        "insert":      QColor("#C8E6C9"),
+        "equal": QColor("#FFFFFF"),
+        "replace": QColor("#FFECB3"),
+        "delete": QColor("#FFCDD2"),
+        "insert": QColor("#C8E6C9"),
         "placeholder": QColor("#F9F9F9"),
     }
     _BORDER_COLOR = {
-        "equal":       QColor("#E0E0E0"),
-        "replace":     QColor("#FFB300"),
-        "delete":      QColor("#E53935"),
-        "insert":      QColor("#43A047"),
+        "equal": QColor("#E0E0E0"),
+        "replace": QColor("#FFB300"),
+        "delete": QColor("#E53935"),
+        "insert": QColor("#43A047"),
         "placeholder": QColor("#EEEEEE"),
     }
     _SEL_BG = QColor("#EBEBEB")
@@ -1210,6 +790,8 @@ class BlockDelegate(QStyledItemDelegate):
         self._font.setPointSize(10)
         self._doc_cache = {}  # LRU-like cache for QTextDocument (limited size)
         self._cache_max = 200  # max cached documents
+        self._height_cache = {}
+        self._search_text = ""
 
     def _get_doc(self, html_content: str, width: int) -> QTextDocument:
         """Get or create a QTextDocument for the given content and width."""
@@ -1238,16 +820,22 @@ class BlockDelegate(QStyledItemDelegate):
 
         badge = ""
         if status == "delete" and side == "left":
-            badge = ('<span style="font-size:8px;background:#E53935;color:#fff;'
-                     'padding:1px 5px;border-radius:2px;margin-right:6px;">STERS</span> ')
+            badge = (
+                '<span style="font-size:8px;background:#E53935;color:#fff;'
+                'padding:1px 5px;border-radius:2px;margin-right:6px;">ȘTERS</span> '
+            )
         elif status == "insert" and side == "right":
-            badge = ('<span style="font-size:8px;background:#43A047;color:#fff;'
-                     'padding:1px 5px;border-radius:2px;margin-right:6px;">NOU</span> ')
+            badge = (
+                '<span style="font-size:8px;background:#43A047;color:#fff;'
+                'padding:1px 5px;border-radius:2px;margin-right:6px;">NOU</span> '
+            )
 
         text = content if is_html else html_lib.escape(content)
         return badge + text
 
-    def paint(self, painter: QPainter, option: QStyleOptionViewItem, index: QModelIndex):
+    def paint(
+        self, painter: QPainter, option: QStyleOptionViewItem, index: QModelIndex
+    ):
         data = index.data(Qt.UserRole)
         if data is None:
             return
@@ -1263,7 +851,11 @@ class BlockDelegate(QStyledItemDelegate):
         painter.fillRect(rect, bg)
 
         # Left border (3px)
-        border_color = self._SEL_BORDER if selected else self._BORDER_COLOR.get(status, self._BORDER_COLOR["equal"])
+        border_color = (
+            self._SEL_BORDER
+            if selected
+            else self._BORDER_COLOR.get(status, self._BORDER_COLOR["equal"])
+        )
         border_rect = QRect(rect.left(), rect.top(), 3, rect.height())
         painter.fillRect(border_rect, border_color)
 
@@ -1274,29 +866,60 @@ class BlockDelegate(QStyledItemDelegate):
             doc = self._get_doc(html_content, content_width)
 
             painter.translate(rect.left() + 13, rect.top() + 7)
-            doc.drawContents(painter)
+            context = QAbstractTextDocumentLayout.PaintContext()
+            selections = []
+            if self._search_text:
+                cursor = doc.find(self._search_text)
+                while not cursor.isNull():
+                    selection = QAbstractTextDocumentLayout.Selection()
+                    selection.cursor = cursor
+                    selection.format.setBackground(QColor("#FFF176"))
+                    selection.format.setForeground(QColor("#111111"))
+                    selections.append(selection)
+                    cursor = doc.find(self._search_text, cursor)
+            context.selections = selections
+            doc.documentLayout().draw(painter, context)
 
         painter.restore()
 
-    def sizeHint(self, option: QStyleOptionViewItem, index: QModelIndex) -> QSize:
-        data = index.data(Qt.UserRole)
-        if data is None:
-            return QSize(100, 32)
-
-        status, content, is_html, side, selected = data
-
+    def _natural_height(self, block, side, width):
+        status, content, is_html = block
         if status == "placeholder" or not content:
-            return QSize(option.rect.width() if option.rect.width() > 0 else 100, 32)
+            return 32
+        document = self._get_doc(
+            self._build_html(status, content, is_html, side), max(20, width - 20)
+        )
+        return max(32, int(document.size().height()) + 14)
 
-        html_content = self._build_html(status, content, is_html, side)
-        width = option.rect.width() - 20 if option.rect.width() > 20 else 400
-        doc = self._get_doc(html_content, width)
-        h = int(doc.size().height()) + 14  # 7px top + 7px bottom padding
-        return QSize(option.rect.width() if option.rect.width() > 0 else 100, max(h, 32))
+    def sizeHint(self, option: QStyleOptionViewItem, index: QModelIndex) -> QSize:
+        panel = self.parent()
+        row = index.row()
+        if not index.isValid() or row >= panel._model.block_count():
+            return QSize(100, 32)
+        width = max(40, panel.viewport().width())
+        partner = panel._partner
+        partner_width = max(40, partner.viewport().width()) if partner else width
+        key = (row, width, partner_width)
+        if key not in self._height_cache:
+            height = self._natural_height(
+                panel._model._blocks[row], panel._model._side, width
+            )
+            if partner and row < partner._model.block_count():
+                height = max(
+                    height,
+                    self._natural_height(
+                        partner._model._blocks[row], partner._model._side, partner_width
+                    ),
+                )
+            if len(self._height_cache) >= 2000:
+                self._height_cache.clear()
+            self._height_cache[key] = height
+        return QSize(width, self._height_cache[key])
 
     def clear_cache(self):
         """Clear the document cache (call when loading new data)."""
         self._doc_cache.clear()
+        self._height_cache.clear()
 
 
 class ComparePanel(QListView):
@@ -1305,6 +928,7 @@ class ComparePanel(QListView):
     Only visible items are rendered — no widget is created per paragraph.
     This drastically reduces memory usage for large documents (thousands of paragraphs).
     """
+
     block_clicked = pyqtSignal(int)
 
     def __init__(self, parent=None):
@@ -1325,6 +949,9 @@ class ComparePanel(QListView):
         self.setUniformItemSizes(False)
         self.setWordWrap(True)
         self.setSpacing(1)
+        self.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self.setLayoutMode(QListView.Batched)
+        self.setBatchSize(100)
 
         self._model = BlockListModel(self)
         self._delegate = BlockDelegate(self)
@@ -1333,27 +960,29 @@ class ComparePanel(QListView):
 
         self.clicked.connect(self._on_item_clicked)
 
-        self._partner: Optional['ComparePanel'] = None
+        self._partner: Optional["ComparePanel"] = None
         self._row_heights: list = []
 
     def load_blocks(self, blocks: list, side: str, diff_positions: list):
         self._delegate.clear_cache()
         self._model.set_data(blocks, side)
         self._row_heights = []
-        # Schedule height computation after layout
-        QTimer.singleShot(50, self._compute_row_heights)
 
     def _compute_row_heights(self):
-        """Pre-compute row heights for scroll synchronization."""
-        n = self._model.block_count()
-        vp_width = self.viewport().width()
-        self._row_heights = []
+        """Compatibility helper for diagnostics; normal rendering measures lazily."""
         option = QStyleOptionViewItem()
-        option.rect = QRect(0, 0, vp_width, 0)
-        for i in range(n):
-            idx = self._model.index(i)
-            size = self._delegate.sizeHint(option, idx)
-            self._row_heights.append(size.height())
+        self._row_heights = [
+            self._delegate.sizeHint(option, self._model.index(i)).height()
+            for i in range(self._model.block_count())
+        ]
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._delegate.clear_cache()
+        if self._partner:
+            self._partner._delegate.clear_cache()
+            self._partner.scheduleDelayedItemsLayout()
+        self.scheduleDelayedItemsLayout()
 
     def set_selected(self, idx: int):
         self._model.set_selected(idx)
@@ -1376,6 +1005,7 @@ class ComparePanel(QListView):
 # ══════════════════════════════════════════════════════════════════════════════
 # 6. Fereastra principala
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 def _flat_btn(text: str, dark: bool = False) -> QPushButton:
     btn = QPushButton(text)
@@ -1408,25 +1038,46 @@ def _flat_btn(text: str, dark: bool = False) -> QPushButton:
 
 class CompareWindow(QMainWindow):
 
-    def __init__(self):
+    def __init__(self, settings=None):
         super().__init__()
+        self.settings = (
+            settings if settings is not None else QSettings("Comparer", "Comparer")
+        )
+        self._busy = False
+        self._state = "idle"
+        self._export_worker = None
+        self._closing = False
+        self._reset_pending = False
+        self._visible_rows = []
+        self._search_matches = []
+        self._search_index = -1
         self.setWindowTitle("Comparer")
         self.setMinimumSize(1100, 680)
         self.setWindowIcon(_load_icon())
-        self._syncing      = False
+        self._syncing = False
         self._result: Optional[dict] = None
         self._worker: Optional[CompareWorker] = None
         self._current_diff = 0
-        self._diff_count   = 0
-        self._sel_idx      = -1
+        self._diff_count = 0
+        self._sel_idx = -1
         self._setup_ui()
         self._setup_shortcuts()
+        for zone in (self.drop_left, self.drop_right):
+            zone._last_dir = self.settings.value("last_directory", "", type=str)
+        geometry = self.settings.value("geometry")
+        if geometry:
+            self.restoreGeometry(geometry)
+        self._set_busy(False)
 
     def _setup_shortcuts(self):
         QShortcut(QKeySequence("Ctrl+E"), self, self._export_report)
         QShortcut(QKeySequence("Ctrl+P"), self, self._export_pdf)
-        QShortcut(QKeySequence("Right"),  self, self._next_diff)
-        QShortcut(QKeySequence("Left"),   self, self._prev_diff)
+        QShortcut(QKeySequence("Right"), self, self._next_diff)
+        QShortcut(QKeySequence("Left"), self, self._prev_diff)
+        QShortcut(QKeySequence("Escape"), self, self._go_back)
+        QShortcut(QKeySequence("Ctrl+F"), self, self._focus_search)
+        QShortcut(QKeySequence("F3"), self, self._next_search)
+        QShortcut(QKeySequence("Shift+F3"), self, self._prev_search)
 
     def _setup_ui(self):
         self.stack = QStackedWidget()
@@ -1456,8 +1107,8 @@ class CompareWindow(QMainWindow):
 
         zones = QHBoxLayout()
         zones.setSpacing(16)
-        self.drop_left  = DropZone("Baza  —  Document 1")
-        self.drop_right = DropZone("Comparatie  —  Document 2")
+        self.drop_left = DropZone("Bază  —  Document 1")
+        self.drop_right = DropZone("Comparație  —  Document 2")
         self.drop_left.setFixedHeight(148)
         self.drop_right.setFixedHeight(148)
         self.drop_left.file_loaded.connect(self._on_file_loaded)
@@ -1466,6 +1117,15 @@ class CompareWindow(QMainWindow):
         zones.addWidget(self.drop_right)
         center_layout.addLayout(zones)
         center_layout.addSpacing(16)
+        options_row = QHBoxLayout()
+        self.ignore_whitespace = QCheckBox("Ignoră spațiile suplimentare")
+        self.ignore_case = QCheckBox("Ignoră majusculele")
+        self.ignore_headers = QCheckBox("Ignoră antetele și subsolurile")
+        for key, checkbox in self._option_controls().items():
+            checkbox.setChecked(self.settings.value(key, False, type=bool))
+            checkbox.toggled.connect(self._save_preferences)
+            options_row.addWidget(checkbox)
+        center_layout.addLayout(options_row)
 
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 0)
@@ -1487,7 +1147,7 @@ class CompareWindow(QMainWindow):
         self.status_lbl.setStyleSheet("color:#888;")
         self.status_lbl.setFixedHeight(18)
 
-        self.compare_btn = _flat_btn("Compara", dark=True)
+        self.compare_btn = _flat_btn("Compară", dark=True)
         fb = QFont()
         fb.setPointSize(10)
         self.compare_btn.setFont(fb)
@@ -1499,6 +1159,10 @@ class CompareWindow(QMainWindow):
         btn_row = QHBoxLayout()
         btn_row.addStretch()
         btn_row.addWidget(self.compare_btn)
+        self.cancel_compare_btn = _flat_btn("Anulează")
+        self.cancel_compare_btn.clicked.connect(self._cancel_work)
+        self.cancel_compare_btn.hide()
+        btn_row.addWidget(self.cancel_compare_btn)
         btn_row.addStretch()
 
         center_layout.addWidget(self.status_lbl)
@@ -1525,6 +1189,7 @@ class CompareWindow(QMainWindow):
         layout.setSpacing(0)
 
         layout.addWidget(self._build_toolbar())
+        layout.addWidget(self._build_filterbar())
 
         self.splitter = QSplitter(Qt.Horizontal)
         self.splitter.setStyleSheet(
@@ -1564,6 +1229,8 @@ class CompareWindow(QMainWindow):
         self.splitter.addWidget(left_panel_w)
         self.splitter.addWidget(right_panel_w)
         self.splitter.setSizes([500, 500])
+        self.left_panel._partner = self.right_panel
+        self.right_panel._partner = self.left_panel
         layout.addWidget(self.splitter, 1)
 
         layout.addWidget(self._build_stats_panel())
@@ -1584,17 +1251,19 @@ class CompareWindow(QMainWindow):
         lay.setContentsMargins(12, 0, 12, 0)
         lay.setSpacing(8)
 
-        self.swap_btn   = _flat_btn("\u21c4  Inverseaza")
-        self.export_btn = _flat_btn("Exporta HTML")
-        self.export_pdf_btn = _flat_btn("Exporta PDF")
-        self.info_btn   = _flat_btn("\u2139  Informatii documente")
+        self.new_btn = _flat_btn("Comparație nouă")
+        self.new_btn.clicked.connect(self._go_back)
+        self.swap_btn = _flat_btn("\u21c4  Inversează")
+        self.export_btn = _flat_btn("Exportă HTML")
+        self.export_pdf_btn = _flat_btn("Exportă PDF")
+        self.info_btn = _flat_btn("\u2139  Informații documente")
         self.swap_btn.clicked.connect(self._swap_and_recompare)
         self.export_btn.clicked.connect(self._export_report)
         self.export_pdf_btn.clicked.connect(self._export_pdf)
         self.info_btn.clicked.connect(self._show_doc_info)
 
-        self.prev_diff_btn = _flat_btn("\u2039 Diff")
-        self.next_diff_btn = _flat_btn("Diff \u203a")
+        self.prev_diff_btn = _flat_btn("\u2039 Diferență")
+        self.next_diff_btn = _flat_btn("Diferență \u203a")
         self.diff_counter_lbl = QLabel("\u2014")
         fc = QFont()
         fc.setPointSize(9)
@@ -1604,6 +1273,7 @@ class CompareWindow(QMainWindow):
         self.prev_diff_btn.clicked.connect(self._prev_diff)
         self.next_diff_btn.clicked.connect(self._next_diff)
 
+        lay.addWidget(self.new_btn)
         lay.addWidget(self.swap_btn)
         lay.addSpacing(8)
         lay.addWidget(self.prev_diff_btn)
@@ -1616,6 +1286,165 @@ class CompareWindow(QMainWindow):
         lay.addWidget(self.info_btn)
 
         return bar
+
+    def _option_controls(self):
+        return {
+            "ignore_whitespace": self.ignore_whitespace,
+            "ignore_case": self.ignore_case,
+            "ignore_headers": self.ignore_headers,
+        }
+
+    def _comparison_options(self):
+        return {
+            key: checkbox.isChecked()
+            for key, checkbox in self._option_controls().items()
+        }
+
+    def _save_preferences(self, *_args):
+        for key, value in self._comparison_options().items():
+            self.settings.setValue(key, value)
+        if hasattr(self, "only_differences"):
+            self.settings.setValue(
+                "only_differences", self.only_differences.isChecked()
+            )
+            self.settings.setValue("context_rows", self.context_rows.value())
+
+    def _build_filterbar(self):
+        bar = QWidget()
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(12, 6, 12, 6)
+        self.only_differences = QCheckBox("Doar diferențele")
+        self.only_differences.setChecked(
+            self.settings.value("only_differences", False, type=bool)
+        )
+        self.context_rows = QSpinBox()
+        self.context_rows.setRange(0, 10)
+        self.context_rows.setValue(self.settings.value("context_rows", 1, type=int))
+        self.context_rows.setToolTip(
+            "Paragrafe de context înainte și după fiecare diferență"
+        )
+        self.only_differences.setToolTip(
+            "Filtrul afectează numai afișarea; exportul păstrează raportul complet."
+        )
+        self.only_differences.toggled.connect(self._apply_filter)
+        self.context_rows.valueChanged.connect(self._apply_filter)
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText("Caută în documente… (Ctrl+F)")
+        self.search_edit.setClearButtonEnabled(True)
+        self.search_edit.textChanged.connect(self._update_search)
+        self.search_edit.returnPressed.connect(self._next_search)
+        self.search_previous = _flat_btn("‹")
+        self.search_next = _flat_btn("›")
+        self.search_previous.setToolTip("Rezultatul anterior (Shift+F3)")
+        self.search_next.setToolTip("Rezultatul următor (F3)")
+        self.search_previous.clicked.connect(self._prev_search)
+        self.search_next.clicked.connect(self._next_search)
+        self.search_count = QLabel("")
+        self.cancel_export_btn = _flat_btn("Anulează exportul")
+        self.cancel_export_btn.clicked.connect(self._cancel_work)
+        self.cancel_export_btn.hide()
+        self.export_status = QLabel("")
+        layout.addWidget(self.only_differences)
+        layout.addWidget(QLabel("Context:"))
+        layout.addWidget(self.context_rows)
+        layout.addWidget(self.search_edit, 1)
+        layout.addWidget(self.search_previous)
+        layout.addWidget(self.search_next)
+        layout.addWidget(self.search_count)
+        layout.addWidget(self.export_status)
+        layout.addWidget(self.cancel_export_btn)
+        return bar
+
+    def _apply_filter(self, *_args):
+        if not self._result:
+            return
+        count = len(self._result["left_blocks"])
+        if self.only_differences.isChecked():
+            keep = set()
+            context = self.context_rows.value()
+            for row, (left, right) in enumerate(
+                zip(self._result["left_blocks"], self._result["right_blocks"])
+            ):
+                if left[0] not in ("equal", "placeholder") or right[0] not in (
+                    "equal",
+                    "placeholder",
+                ):
+                    keep.update(
+                        range(max(0, row - context), min(count, row + context + 1))
+                    )
+            self._visible_rows = sorted(keep)
+        else:
+            self._visible_rows = list(range(count))
+        self._original_to_visible = {
+            original: visible for visible, original in enumerate(self._visible_rows)
+        }
+        self._sel_idx = -1
+        self.left_panel.load_blocks(
+            [self._result["left_blocks"][i] for i in self._visible_rows], "left", []
+        )
+        self.right_panel.load_blocks(
+            [self._result["right_blocks"][i] for i in self._visible_rows], "right", []
+        )
+        self.export_status.setText(
+            "Documentele sunt identice; nu există diferențe de afișat."
+            if not self._visible_rows
+            else ""
+        )
+        self.left_panel.scheduleDelayedItemsLayout()
+        self.right_panel.scheduleDelayedItemsLayout()
+        self._save_preferences()
+        self._update_search()
+
+    def _focus_search(self):
+        if self.stack.currentIndex() == 1:
+            self.search_edit.setFocus()
+            self.search_edit.selectAll()
+
+    def _update_search(self, *_args):
+        query = self.search_edit.text().strip()
+        self._search_matches = []
+        if query and self._result:
+            for row in self._visible_rows:
+                texts = []
+                for side in ("left_blocks", "right_blocks"):
+                    _status, text, is_html = self._result[side][row]
+                    texts.append(_strip_html_tags(text) if is_html else text)
+                if any(query.casefold() in text.casefold() for text in texts):
+                    self._search_matches.append(row)
+        for panel in (self.left_panel, self.right_panel):
+            panel._delegate._search_text = query
+            panel.viewport().update()
+        self._search_index = -1
+        self.search_count.setText(
+            f"{len(self._search_matches)} paragrafe" if query else ""
+        )
+        self.search_next.setEnabled(bool(self._search_matches))
+        self.search_previous.setEnabled(bool(self._search_matches))
+        if self._search_matches:
+            self._next_search()
+
+    def _move_search(self, direction):
+        if not self._search_matches:
+            return
+        self._search_index = (self._search_index + direction) % len(
+            self._search_matches
+        )
+        original = self._search_matches[self._search_index]
+        row = self._original_to_visible[original]
+        self._sel_idx = row
+        self.left_panel.set_selected(row)
+        self.right_panel.set_selected(row)
+        self.left_panel.scroll_to_block(row)
+        self.right_panel.scroll_to_block(row)
+        self.search_count.setText(
+            f"{self._search_index + 1}/{len(self._search_matches)} paragrafe"
+        )
+
+    def _next_search(self):
+        self._move_search(1)
+
+    def _prev_search(self):
+        self._move_search(-1)
 
     def _build_stats_panel(self) -> QFrame:
         panel = QFrame()
@@ -1639,6 +1468,9 @@ class CompareWindow(QMainWindow):
         self.sim_big.setStyleSheet("color:#111;")
         self.sim_big.setAlignment(Qt.AlignCenter)
         sl_lbl = QLabel("SIMILARITATE")
+        score_help = "Scor calculat pe secvențe de paragrafe. Paragrafele modificate nu sunt considerate identice; opțiunile de normalizare se aplică înainte de comparație."
+        sl_lbl.setToolTip(score_help)
+        self.sim_big.setToolTip(score_help)
         fs = QFont()
         fs.setPointSize(7)
         sl_lbl.setFont(fs)
@@ -1652,12 +1484,12 @@ class CompareWindow(QMainWindow):
         sep.setStyleSheet("color:#DDDDDD;")
         sep.setFixedWidth(1)
 
-        (self.s_equal,   w_eq)  = self._make_stat("IDENTICE",   "\u2014")
-        (self.s_mod,     w_mod) = self._make_stat("MODIFICATE", "\u2014")
-        (self.s_added,   w_add) = self._make_stat("ADAUGATE",   "\u2014")
-        (self.s_deleted, w_del) = self._make_stat("STERSE",     "\u2014")
-        (self.s_tot1,    w_t1)  = self._make_stat("PARAGRAFE DOC 1", "\u2014")
-        (self.s_tot2,    w_t2)  = self._make_stat("PARAGRAFE DOC 2", "\u2014")
+        self.s_equal, w_eq = self._make_stat("IDENTICE", "\u2014")
+        self.s_mod, w_mod = self._make_stat("MODIFICATE", "\u2014")
+        self.s_added, w_add = self._make_stat("ADĂUGATE", "\u2014")
+        self.s_deleted, w_del = self._make_stat("ȘTERSE", "\u2014")
+        self.s_tot1, w_t1 = self._make_stat("PARAGRAFE DOC 1", "\u2014")
+        self.s_tot2, w_t2 = self._make_stat("PARAGRAFE DOC 2", "\u2014")
 
         legend = self._build_legend()
 
@@ -1705,8 +1537,8 @@ class CompareWindow(QMainWindow):
         lay.setContentsMargins(8, 8, 0, 8)
 
         items = [
-            ("#FFCDD2", "#E53935", "Sters  (doc. stanga)"),
-            ("#C8E6C9", "#43A047", "Adaugat  (doc. dreapta)"),
+            ("#FFCDD2", "#E53935", "Șters  (doc. stânga)"),
+            ("#C8E6C9", "#43A047", "Adăugat  (doc. dreapta)"),
             ("#FFECB3", "#FFB300", "Modificat  (ambele)"),
         ]
         fl = QFont()
@@ -1730,76 +1562,127 @@ class CompareWindow(QMainWindow):
     # ── Logica aplicatiei ────────────────────────────────────────────────────
 
     def _on_file_loaded(self, _path: str):
+        if _path:
+            self.settings.setValue("last_directory", str(Path(_path).parent))
+        self._refresh_controls()
+
+    def _refresh_controls(self):
         both = self.drop_left.file_path and self.drop_right.file_path
-        self.compare_btn.setEnabled(bool(both))
-        # Show inline warning if types mismatch
-        if both:
-            err = validate_same_type(self.drop_left.file_path, self.drop_right.file_path)
-            if err:
-                self.status_lbl.setText(
-                    "Tipuri diferite! Comparația este permisă doar PDF\u2194PDF sau DOCX\u2194DOCX."
-                )
-                self.status_lbl.setStyleSheet("color:#E53935;")
-                self.compare_btn.setEnabled(False)
-            else:
-                self.status_lbl.setText("")
-                self.status_lbl.setStyleSheet("color:#888;")
-        else:
-            self.status_lbl.setText("")
-            self.status_lbl.setStyleSheet("color:#888;")
+        mismatch = bool(
+            both
+            and validate_same_type(self.drop_left.file_path, self.drop_right.file_path)
+        )
+        self.compare_btn.setEnabled(not self._busy and bool(both) and not mismatch)
+        for control in (
+            self.drop_left,
+            self.drop_right,
+            *self._option_controls().values(),
+        ):
+            control.setEnabled(not self._busy)
+        for control in (
+            self.swap_btn,
+            self.export_btn,
+            self.export_pdf_btn,
+            self.info_btn,
+        ):
+            control.setEnabled(not self._busy and self._result is not None)
+        self.new_btn.setEnabled(not self._busy)
+        self.only_differences.setEnabled(not self._busy)
+        self.context_rows.setEnabled(not self._busy)
+        if not self._busy:
+            self.status_lbl.setText(
+                "Tipuri diferite! Comparația este permisă doar PDF↔PDF sau DOCX↔DOCX."
+                if mismatch
+                else ""
+            )
+            self.status_lbl.setStyleSheet(
+                "color:#E53935;" if mismatch else "color:#888;"
+            )
 
-    def _set_busy(self, busy: bool):
-        self.compare_btn.setEnabled(not busy and bool(
-            self.drop_left.file_path and self.drop_right.file_path
-        ))
-        self.swap_btn.setEnabled(not busy)
-        self.export_btn.setEnabled(not busy and self._result is not None)
-        self.export_pdf_btn.setEnabled(not busy and self._result is not None)
-        if busy:
-            self.progress_bar.show()
-        else:
-            self.progress_bar.hide()
-            self.status_lbl.setText("")
+    def _set_busy(self, busy):
+        self._busy = busy
+        if not busy:
+            self._state = "idle"
+        self.progress_bar.setVisible(busy and self._state != "exporting")
+        self.cancel_compare_btn.setVisible(busy and self._state != "exporting")
+        self.cancel_export_btn.setVisible(busy and self._state == "exporting")
+        self._refresh_controls()
 
-    def _run_comparison(self, path1: str = None, path2: str = None):
+    def _run_comparison(self, path1=None, path2=None):
+        if self._busy or (self._worker and self._worker.isRunning()):
+            return
         p1 = path1 or self.drop_left.file_path
         p2 = path2 or self.drop_right.file_path
         if not p1 or not p2:
             return
-
-        # Validate same file type
-        err = validate_same_type(p1, p2)
-        if err:
-            show_notification(self, QMessageBox.Warning, "Tipuri de fișiere incompatibile", err)
+        error = validate_same_type(p1, p2)
+        if error:
+            show_notification(
+                self, QMessageBox.Warning, "Tipuri de fișiere incompatibile", error
+            )
             return
-
-        if self._worker and self._worker.isRunning():
-            try:
-                self._worker.finished.disconnect()
-                self._worker.error.disconnect()
-            except TypeError:
-                pass
-
+        self._state = "running"
         self._set_busy(True)
         self.status_lbl.setText("Se procesează...")
-
-        self._worker = CompareWorker(p1, p2)
+        self._worker = CompareWorker(p1, p2, self._comparison_options())
         self._worker.finished.connect(self._on_comparison_done)
         self._worker.error.connect(self._on_comparison_error)
         self._worker.progress.connect(self.status_lbl.setText)
+        self._worker.settled.connect(self._work_settled)
         self._worker.start()
+
+    def _cancel_work(self):
+        worker = self._export_worker or self._worker
+        if worker and worker.isRunning():
+            self._state = "cancelling"
+            worker.requestInterruption()
+            self.status_lbl.setText(
+                "Se anulează; se așteaptă încheierea operației curente..."
+            )
+            self.export_status.setText("Se anulează...")
+            self.cancel_compare_btn.setEnabled(False)
+            self.cancel_export_btn.setEnabled(False)
+
+    def _work_settled(self):
+        workers = [worker for worker in (self._worker, self._export_worker) if worker]
+        if any(worker.isRunning() for worker in workers):
+            QTimer.singleShot(20, self._work_settled)
+            return
+        for worker in workers:
+            worker.deleteLater()
+        self._worker = None
+        self._export_worker = None
+        self._set_busy(False)
+        self.cancel_compare_btn.setEnabled(True)
+        self.cancel_export_btn.setEnabled(True)
+        self.export_status.setText(
+            "Documentele sunt identice; nu există diferențe de afișat."
+            if self._result and not self._visible_rows
+            else ""
+        )
+        if self._reset_pending:
+            self._reset_pending = False
+            self._go_back()
+        if self._closing:
+            self.close()
 
     @pyqtSlot(dict)
     def _on_comparison_done(self, result: dict):
+        if self._closing or self._reset_pending or self._state == "cancelling":
+            return
         self._result = result
-        self._set_busy(False)
+        if not self._worker or not self._worker.isRunning():
+            self._set_busy(False)
         self._update_compare_page(result)
         self.stack.setCurrentIndex(1)
 
     @pyqtSlot(str, str)
     def _on_comparison_error(self, msg: str, details: str = ""):
-        self._set_busy(False)
-        show_notification(self, QMessageBox.Critical, "Eroare la comparație", msg, details)
+        if self._closing or self._state == "cancelling":
+            return
+        show_notification(
+            self, QMessageBox.Critical, "Eroare la comparație", msg, details
+        )
 
     def _on_block_clicked(self, idx: int):
         new_sel = -1 if self._sel_idx == idx else idx
@@ -1809,8 +1692,8 @@ class CompareWindow(QMainWindow):
 
     def _update_compare_page(self, result: dict):
         self._sel_idx = -1
-        sim    = result["similarity"]
-        stats  = result["stats"]
+        sim = result["similarity"]
+        stats = result["stats"]
         sim_pct = f"{sim * 100:.1f}%"
 
         self.sim_big.setText(sim_pct)
@@ -1826,16 +1709,11 @@ class CompareWindow(QMainWindow):
         self.left_hdr.setText(f"  {n1}")
         self.right_hdr.setText(f"  {n2}")
 
-        self._diff_count   = result.get("diff_count", 0)
+        self._diff_count = result.get("diff_count", 0)
         self._current_diff = 0
         self._update_diff_nav()
 
-        self.left_panel.load_blocks(
-            result["left_blocks"], "left", result["diff_positions"]
-        )
-        self.right_panel.load_blocks(
-            result["right_blocks"], "right", result["diff_positions"]
-        )
+        self._apply_filter()
 
     def _update_diff_nav(self):
         has = self._diff_count > 0
@@ -1849,7 +1727,10 @@ class CompareWindow(QMainWindow):
         if not self._diff_count:
             return
         self._current_diff = max(0, min(idx, self._diff_count - 1))
-        block_idx = self._result["diff_positions"][self._current_diff]
+        original = self._result["diff_positions"][self._current_diff]
+        block_idx = self._original_to_visible.get(original)
+        if block_idx is None:
+            return
         self._syncing = True
         self.left_panel.scroll_to_block(block_idx)
         self.right_panel.scroll_to_block(block_idx)
@@ -1865,24 +1746,42 @@ class CompareWindow(QMainWindow):
             self._go_to_diff(self._current_diff - 1)
 
     def _go_back(self):
-        if self.stack.currentIndex() == 0:
+        if self._busy:
+            self._reset_pending = True
+            self._cancel_work()
             return
-        if self._worker and self._worker.isRunning():
-            try:
-                self._worker.finished.disconnect()
-                self._worker.error.disconnect()
-            except TypeError:
-                pass
-        self._set_busy(False)
         self._sel_idx = -1
+        self._result = None
+        self._diff_count = 0
+        self._current_diff = 0
+        self._visible_rows = []
+        self._search_matches = []
         self.stack.setCurrentIndex(0)
         self.drop_left.reset()
         self.drop_right.reset()
-        self.compare_btn.setEnabled(False)
-        self._result = None
+        self.search_edit.clear()
+        self.export_status.clear()
+        self.left_panel.load_blocks([], "left", [])
+        self.right_panel.load_blocks([], "right", [])
+        self._update_diff_nav()
+        self._set_busy(False)
+
+    def closeEvent(self, event):
+        self._save_preferences()
+        self.settings.setValue("geometry", self.saveGeometry())
+        self.settings.sync()
+        if self._busy or any(
+            worker and worker.isRunning()
+            for worker in (self._worker, self._export_worker)
+        ):
+            self._closing = True
+            self._cancel_work()
+            event.ignore()
+            return
+        event.accept()
 
     def _swap_and_recompare(self):
-        if not self._result:
+        if not self._result or self._busy:
             return
         p1 = self._result["path1"]
         p2 = self._result["path2"]
@@ -1891,51 +1790,50 @@ class CompareWindow(QMainWindow):
         self._run_comparison(p2, p1)
 
     def _export_report(self):
-        if not self._result:
-            return
-        now = datetime.now()
-        default = now.strftime("%Y%m%d") + "_N_xxx_RaportComparatie-[xxxxx].html"
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Salvează raportul HTML", default, "HTML (*.html)"
-        )
-        if not path:
-            return
-        try:
-            content = export_html_report(
-                self._result["path1"], self._result["path2"], self._result,
-            )
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(content)
-            show_notification(self, QMessageBox.Information, "Export HTML reușit", f"Raportul HTML a fost salvat în:\n{path}")
-        except Exception as e:
-            show_notification(
-                self, QMessageBox.Critical, "Eroare la exportul HTML",
-                error_message(e, "Raportul HTML nu a putut fi salvat. Verificați locația aleasă și încercați din nou."),
-                str(e),
-            )
+        self._start_export("HTML")
 
     def _export_pdf(self):
-        """Export comparison report as PDF using fpdf2."""
-        if not self._result:
+        self._start_export("PDF")
+
+    def _start_export(self, format_name):
+        if not self._result or self._busy:
             return
-        now = datetime.now()
-        default = now.strftime("%Y%m%d") + "_N_xxx_RaportComparatie-[xxxxx].pdf"
+        extension = format_name.lower()
+        default = datetime.now().strftime("%Y%m%d") + f"_RaportComparație.{extension}"
         path, _ = QFileDialog.getSaveFileName(
-            self, "Salvează raportul PDF", default, "PDF (*.pdf)"
+            self,
+            f"Salvează raportul {format_name}",
+            default,
+            f"{format_name} (*.{extension})",
         )
         if not path:
             return
-        try:
-            export_pdf_report(
-                self._result["path1"], self._result["path2"],
-                self._result, path,
-            )
-            show_notification(self, QMessageBox.Information, "Export PDF reușit", f"Raportul PDF a fost salvat în:\n{path}")
-        except Exception as e:
+        self._state = "exporting"
+        self._set_busy(True)
+        self._export_worker = ExportWorker(format_name, path, self._result)
+        self._export_worker.progress.connect(self.export_status.setText)
+        self._export_worker.completed.connect(self._on_export_done)
+        self._export_worker.error.connect(self._on_export_error)
+        self._export_worker.finished.connect(self._work_settled)
+        self._export_worker.start()
+
+    def _on_export_done(self, format_name, path):
+        if not self._closing:
             show_notification(
-                self, QMessageBox.Critical, "Eroare la exportul PDF",
-                error_message(e, "Raportul PDF nu a putut fi salvat. Verificați locația aleasă și încercați din nou."),
-                str(e),
+                self,
+                QMessageBox.Information,
+                f"Export {format_name} reușit",
+                f"Raportul {format_name} a fost salvat în:\n{path}",
+            )
+
+    def _on_export_error(self, format_name, text, details):
+        if not self._closing:
+            show_notification(
+                self,
+                QMessageBox.Critical,
+                f"Eroare la exportul {format_name}",
+                text,
+                details,
             )
 
     def _show_doc_info(self):
@@ -1966,6 +1864,7 @@ class CompareWindow(QMainWindow):
 # 7. Entry point
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 def main():
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
@@ -1977,19 +1876,22 @@ def main():
     app.setWindowIcon(_load_icon())
 
     palette = QPalette()
-    palette.setColor(QPalette.Window,          QColor("#FFFFFF"))
-    palette.setColor(QPalette.WindowText,      QColor("#111111"))
-    palette.setColor(QPalette.Base,            QColor("#FFFFFF"))
-    palette.setColor(QPalette.AlternateBase,   QColor("#F7F7F7"))
-    palette.setColor(QPalette.Text,            QColor("#111111"))
-    palette.setColor(QPalette.ButtonText,      QColor("#111111"))
-    palette.setColor(QPalette.Button,          QColor("#FFFFFF"))
-    palette.setColor(QPalette.Highlight,       QColor("#111111"))
+    palette.setColor(QPalette.Window, QColor("#FFFFFF"))
+    palette.setColor(QPalette.WindowText, QColor("#111111"))
+    palette.setColor(QPalette.Base, QColor("#FFFFFF"))
+    palette.setColor(QPalette.AlternateBase, QColor("#F7F7F7"))
+    palette.setColor(QPalette.Text, QColor("#111111"))
+    palette.setColor(QPalette.ButtonText, QColor("#111111"))
+    palette.setColor(QPalette.Button, QColor("#FFFFFF"))
+    palette.setColor(QPalette.Highlight, QColor("#111111"))
     palette.setColor(QPalette.HighlightedText, QColor("#FFFFFF"))
     app.setPalette(palette)
 
     win = CompareWindow()
-    win.showMaximized()
+    if win.settings.value("geometry"):
+        win.show()
+    else:
+        win.showMaximized()
     sys.exit(app.exec_())
 
 

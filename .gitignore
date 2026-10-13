@@ -4,11 +4,18 @@ __pycache__/
 *$py.class
 *.egg-info/
 .eggs/
+.pytest_cache/
+.coverage
+htmlcov/
 
 # Virtual environments
 .venv/
 venv/
 env/
+
+# Build artifacts
+build/
+dist/
 
 # IDE
 .vscode/

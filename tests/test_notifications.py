@@ -13,6 +13,8 @@ from docx import Document
 from docx.opc.exceptions import PackageNotFoundError
 from PyQt5.QtCore import QCoreApplication, QTimer, Qt
 from PyQt5.QtWidgets import QApplication, QFileDialog, QMessageBox
+from PyQt5.QtTest import QTest
+import time
 
 import main
 from notifications import UserFacingError, error_message, show_notification
@@ -34,18 +36,29 @@ class NotificationTests(unittest.TestCase):
             (fitz.FileDataError("broken document"), "Documentul nu poate fi citit"),
             (BadZipFile("not a zip file"), "Documentul nu poate fi citit"),
             (PackageNotFoundError("Package not found"), "Documentul nu poate fi citit"),
-            (OSError(errno.ENOSPC, "No space left on device"), "Nu există suficient spațiu"),
+            (
+                OSError(errno.ENOSPC, "No space left on device"),
+                "Nu există suficient spațiu",
+            ),
         ]
         for error, expected in cases:
             with self.subTest(error=type(error).__name__):
                 self.assertIn(expected, error_message(error, "Eroare necunoscută."))
-                self.assertNotIn(str(error), error_message(error, "Eroare necunoscută."))
+                self.assertNotIn(
+                    str(error), error_message(error, "Eroare necunoscută.")
+                )
 
     def test_unknown_error_uses_romanian_fallback(self):
-        self.assertEqual(error_message(RuntimeError("English error"), "Eroare neașteptată."), "Eroare neașteptată.")
+        self.assertEqual(
+            error_message(RuntimeError("English error"), "Eroare neașteptată."),
+            "Eroare neașteptată.",
+        )
 
     def test_localized_errors_are_preserved(self):
-        self.assertEqual(error_message(UserFacingError("Format neacceptat"), "Eroare"), "Format neacceptat")
+        self.assertEqual(
+            error_message(UserFacingError("Format neacceptat"), "Eroare"),
+            "Format neacceptat",
+        )
 
     def test_unsupported_format(self):
         with self.assertRaisesRegex(UserFacingError, "Format neacceptat.*"):
@@ -65,7 +78,14 @@ class NotificationTests(unittest.TestCase):
         worker.error.connect(lambda *args: errors.append(args))
         with patch.object(main, "read_document", side_effect=[["Text"], ["Text"]]):
             worker.run()
-        self.assertEqual(progress, ["Se citește documentul 1...", "Se citește documentul 2...", "Se compară documentele..."])
+        self.assertEqual(
+            progress,
+            [
+                "Se citește documentul 1...",
+                "Se citește documentul 2...",
+                "Se compară documentele...",
+            ],
+        )
         self.assertEqual(results[0]["similarity"], 1.0)
         self.assertEqual(errors, [])
 
@@ -84,7 +104,9 @@ class NotificationTests(unittest.TestCase):
         worker = main.CompareWorker("a.pdf", "b.pdf")
         errors = []
         worker.error.connect(lambda *args: errors.append(args))
-        with patch.object(main, "read_document", side_effect=RuntimeError("English diagnostic")):
+        with patch.object(
+            main, "read_document", side_effect=RuntimeError("English diagnostic")
+        ):
             worker.run()
         self.assertIn("Comparația nu a putut fi finalizată", errors[0][0])
         self.assertEqual(errors[0][1], "English diagnostic")
@@ -95,19 +117,38 @@ class NotificationTests(unittest.TestCase):
             self.assertEqual(box.textFormat(), Qt.PlainText)
             self.assertEqual(box.button(QMessageBox.Ok).text(), "Închide")
             self.assertEqual(box.detailedText(), "English diagnostic")
-            button = next(b for b in box.buttons() if box.buttonRole(b) == QMessageBox.ActionRole)
+            button = next(
+                b for b in box.buttons() if box.buttonRole(b) == QMessageBox.ActionRole
+            )
             self.assertEqual(button.text(), "Afișează detaliile tehnice")
             button.click()
             self.assertEqual(button.text(), "Ascunde detaliile tehnice")
             button.click()
             self.assertEqual(button.text(), "Afișează detaliile tehnice")
             return QMessageBox.Ok
+
         with patch.object(QMessageBox, "exec_", inspect):
-            show_notification(None, QMessageBox.Information, "Export reușit", "Fișier salvat: <document.pdf>", "English diagnostic")
+            show_notification(
+                None,
+                QMessageBox.Information,
+                "Export reușit",
+                "Fișier salvat: <document.pdf>",
+                "English diagnostic",
+            )
 
     def test_qt_overwrite_and_confirmation_buttons(self):
-        self.assertEqual(QCoreApplication.translate("QFileDialog", "%1 already exists.\nDo you want to replace it?"), "%1 există deja.\nDoriți să îl înlocuiți?")
-        box = QMessageBox(QMessageBox.Question, "Confirmare", "Înlocuiți fișierul?", QMessageBox.Yes | QMessageBox.No)
+        self.assertEqual(
+            QCoreApplication.translate(
+                "QFileDialog", "%1 already exists.\nDo you want to replace it?"
+            ),
+            "%1 există deja.\nDoriți să îl înlocuiți?",
+        )
+        box = QMessageBox(
+            QMessageBox.Question,
+            "Confirmare",
+            "Înlocuiți fișierul?",
+            QMessageBox.Yes | QMessageBox.No,
+        )
         self.assertEqual(box.button(QMessageBox.Yes).text(), "&Da")
         self.assertEqual(box.button(QMessageBox.No).text(), "&Nu")
         box.deleteLater()
@@ -132,7 +173,9 @@ class NotificationTests(unittest.TestCase):
             def dismiss_warning():
                 for widget in QApplication.topLevelWidgets():
                     if isinstance(widget, QMessageBox) and widget.isVisible():
-                        observed.append((widget.text(), widget.button(QMessageBox.Yes).text()))
+                        observed.append(
+                            (widget.text(), widget.button(QMessageBox.Yes).text())
+                        )
                         widget.button(QMessageBox.No).click()
 
             timer = QTimer()
@@ -155,6 +198,12 @@ class NotificationTests(unittest.TestCase):
         self.addCleanup(window.close)
         return window
 
+    def wait_export(self, window):
+        started = time.monotonic()
+        while window._busy and time.monotonic() - started < 10:
+            QTest.qWait(20)
+        self.assertFalse(window._busy)
+
     def test_inline_warning_and_loading_status(self):
         window = self.make_window()
         window.drop_left._set_file_display("a.pdf")
@@ -168,31 +217,54 @@ class NotificationTests(unittest.TestCase):
         window = self.make_window()
         with tempfile.TemporaryDirectory() as directory:
             path = str(Path(directory) / "raport.html")
-            with patch.object(QFileDialog, "getSaveFileName", return_value=(path, "")), patch.object(main, "show_notification") as notify:
+            with patch.object(
+                QFileDialog, "getSaveFileName", return_value=(path, "")
+            ), patch.object(main, "show_notification") as notify:
                 window._export_report()
-            self.assertIn("<html lang=\"ro\">", Path(path).read_text())
+                self.wait_export(window)
+            self.assertIn('<html lang="ro">', Path(path).read_text())
             self.assertEqual(notify.call_args.args[2], "Export HTML reușit")
             self.assertIn(path, notify.call_args.args[3])
 
     def test_export_errors_are_localized(self):
         window = self.make_window()
-        for method, function in [(window._export_report, "export_html_report"), (window._export_pdf, "export_pdf_report")]:
+        for method, function in [
+            (window._export_report, "export_html_report"),
+            (window._export_pdf, "export_pdf_report"),
+        ]:
             with self.subTest(export=function):
-                with patch.object(QFileDialog, "getSaveFileName", return_value=("raport", "")), patch.object(main, function, side_effect=PermissionError("Permission denied")), patch.object(main, "show_notification") as notify:
+                with patch.object(
+                    QFileDialog, "getSaveFileName", return_value=("raport", "")
+                ), patch.object(
+                    main, function, side_effect=PermissionError("Permission denied")
+                ), patch.object(
+                    main, "show_notification"
+                ) as notify:
                     method()
-                self.assertIn("Accesul la fișier a fost refuzat", notify.call_args.args[3])
+                    self.wait_export(window)
+                self.assertIn(
+                    "Accesul la fișier a fost refuzat", notify.call_args.args[3]
+                )
                 self.assertEqual(notify.call_args.args[4], "Permission denied")
 
     def test_pdf_export_success(self):
         window = self.make_window()
-        with patch.object(QFileDialog, "getSaveFileName", return_value=("raport.pdf", "")), patch.object(main, "export_pdf_report") as export, patch.object(main, "show_notification") as notify:
+        with patch.object(
+            QFileDialog, "getSaveFileName", return_value=("raport.pdf", "")
+        ), patch.object(main, "export_pdf_report") as export, patch.object(
+            main, "show_notification"
+        ) as notify:
             window._export_pdf()
+            self.wait_export(window)
+        Path("raport.pdf").unlink(missing_ok=True)
         export.assert_called_once()
         self.assertEqual(notify.call_args.args[2], "Export PDF reușit")
 
     def test_cancel_export_is_silent(self):
         window = self.make_window()
-        with patch.object(QFileDialog, "getSaveFileName", return_value=("", "")), patch.object(main, "show_notification") as notify:
+        with patch.object(
+            QFileDialog, "getSaveFileName", return_value=("", "")
+        ), patch.object(main, "show_notification") as notify:
             window._export_report()
             window._export_pdf()
         notify.assert_not_called()
