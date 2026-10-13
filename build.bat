@@ -5,14 +5,16 @@ echo  Document Comparator - PyInstaller Build
 echo ============================================
 echo.
 
-pip install -r requirements-dev.txt
+python -m pip install -r requirements.txt
+if errorlevel 1 goto :error
+python -m pip install pyinstaller==6.22.3
 if errorlevel 1 goto :error
 
 echo.
 echo Se construieste executabilul...
 echo.
 
-pyinstaller Comparer.spec --noconfirm --clean
+python -m PyInstaller Comparer.spec --noconfirm --clean
 if errorlevel 1 goto :error
 
 if not exist "dist\Comparer.exe" goto :missing

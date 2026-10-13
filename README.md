@@ -51,7 +51,7 @@ python -m pip install -r requirements.txt
 python main.py
 ```
 
-Python 3.12 este versiunea folosită în verificările automate.
+Python 3.12 este versiunea verificată pentru această aplicație.
 
 ## Shortcut-uri
 
@@ -64,14 +64,7 @@ Python 3.12 este versiunea folosită în verificările automate.
 | `Ctrl+F` | Activează câmpul de căutare |
 | `F3` / `Shift+F3` | Următorul/anteriorul paragraf găsit |
 
-## Teste și build
-
-```bash
-python -m pip install -r requirements-dev.txt
-python -m unittest discover -s tests -v
-```
-
-Testele folosesc Qt în modul `offscreen` și acoperă notificările, extragerea DOCX/PDF, normalizarea, alinierea coloanelor, filtrarea, căutarea, preferințele, anularea, închiderea în timpul lucrului și exporturile.
+## Build executabil
 
 Pe Windows:
 
@@ -81,7 +74,7 @@ build.bat
 
 Rezultat: `dist/Comparer.exe`. Scriptul oprește build-ul dacă instalarea sau PyInstaller returnează o eroare. `Comparer.spec` include iconurile și fonturile/licența acestora.
 
-GitHub Actions rulează verificările și construiește executabilul Windows pentru commiturile din `main`; executabilul se găsește în artifactul **Comparer-windows** al execuției reușite. Nu este publicat automat ca release.
+Scriptul instalează dependențele aplicației și PyInstaller. Repository-ul conține codul final, resursele și configurația de build, fără teste sau pipeline-uri CI.
 
 ## Structură
 
@@ -89,7 +82,7 @@ GitHub Actions rulează verificările și construiește executabilul Windows pen
 - `report_export.py`: randare HTML și paginare PDF.
 - `main.py`: fereastra, metadatele, modelele/delegatele și worker-ele.
 - `notifications.py` / `romanian_qt.py`: notificări și localizarea dialogurilor Qt.
-- `tests/`: teste automate și cazuri de regresie.
+- `assets/fonts/`: fonturile necesare exportului PDF și licența lor.
 
 ## Limite
 
