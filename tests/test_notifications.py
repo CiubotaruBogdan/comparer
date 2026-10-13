@@ -173,16 +173,25 @@ class NotificationTests(unittest.TestCase):
             def dismiss_warning():
                 for widget in QApplication.topLevelWidgets():
                     if isinstance(widget, QMessageBox) and widget.isVisible():
+                        yes_button = widget.button(QMessageBox.Yes)
                         observed.append(
-                            (widget.text(), widget.button(QMessageBox.Yes).text())
+                            (widget.text(), yes_button.text() if yes_button else "")
                         )
-                        widget.button(QMessageBox.No).click()
+                        no_button = widget.button(QMessageBox.No)
+                        if no_button:
+                            no_button.click()
+                        else:
+                            widget.reject()
 
             timer = QTimer()
             timer.timeout.connect(dismiss_warning)
             timer.start(10)
-            QTimer.singleShot(2000, dialog.reject)
+            timeout = QTimer(dialog)
+            timeout.setSingleShot(True)
+            timeout.timeout.connect(dialog.reject)
+            timeout.start(2000)
             dialog.accept()
+            timeout.stop()
             timer.stop()
             dialog.close()
             self.assertEqual(len(observed), 1)
