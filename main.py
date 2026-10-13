@@ -14,6 +14,9 @@ from pathlib import Path
 from typing import Optional
 from datetime import datetime
 
+from notifications import UserFacingError, error_message, show_notification
+from romanian_qt import install_romanian_dialogs
+
 from docx import Document as DocxDocument
 from docx.oxml.ns import qn
 from docx.text.paragraph import Paragraph as DocxParagraph
@@ -143,7 +146,7 @@ def read_document(path: str) -> list:
     elif ext == ".pdf":
         return read_pdf(path)
     else:
-        raise ValueError(f"Format nesuportat: {ext}\nSunt acceptate: .docx, .pdf")
+        raise UserFacingError(f"Format neacceptat: {ext}\nSunt acceptate fișierele .docx și .pdf.")
 
 
 def validate_same_type(path1: str, path2: str) -> Optional[str]:
@@ -152,10 +155,10 @@ def validate_same_type(path1: str, path2: str) -> Optional[str]:
     ext2 = Path(path2).suffix.lower()
     if ext1 != ext2:
         return (
-            f"Tipuri de fisiere diferite!\n\n"
-            f"Document 1: {ext1.upper().lstrip('.')}\n"
-            f"Document 2: {ext2.upper().lstrip('.')}\n\n"
-            f"Comparatia este permisa doar intre fisiere de acelasi tip:\n"
+            f"Tipuri de fișiere diferite!\n\n"
+            f"Documentul 1: {ext1.upper().lstrip('.')}\n"
+            f"Documentul 2: {ext2.upper().lstrip('.')}\n\n"
+            f"Comparația este permisă doar între fișiere de același tip:\n"
             f"  \u2022 PDF cu PDF\n"
             f"  \u2022 DOCX cu DOCX"
         )
@@ -784,7 +787,7 @@ class DocumentInfoDialog(QDialog):
 
     def __init__(self, path1: str, path2: str, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Informatii documente")
+        self.setWindowTitle("Informații documente")
         self.setMinimumSize(700, 520)
         self.setStyleSheet("background:#fff;")
         self._build_ui(path1, path2)
@@ -795,7 +798,7 @@ class DocumentInfoDialog(QDialog):
         layout.setSpacing(16)
 
         # Title
-        title = QLabel("Informatii documente")
+        title = QLabel("Informații documente")
         f = QFont()
         f.setPointSize(16)
         f.setWeight(QFont.DemiBold)
@@ -815,7 +818,7 @@ class DocumentInfoDialog(QDialog):
         layout.addWidget(self._build_doc_group("Document 2 (Comparatie)", meta2))
 
         # Close button
-        close_btn = QPushButton("Inchide")
+        close_btn = QPushButton("Închide")
         close_btn.setFixedHeight(34)
         close_btn.setFixedWidth(120)
         close_btn.setCursor(Qt.PointingHandCursor)
@@ -892,7 +895,7 @@ class DocumentInfoDialog(QDialog):
             row_idx += 1
 
         if row_idx == 0:
-            no_data = QLabel("Nu s-au putut extrage informatii din acest document.")
+            no_data = QLabel("Nu s-au putut extrage informații din acest document.")
             no_data.setStyleSheet("color:#999; font-size:10px; font-style:italic; font-weight:normal;")
             grid.addWidget(no_data, 0, 0, 1, 2)
 
@@ -905,7 +908,7 @@ class DocumentInfoDialog(QDialog):
 
 class CompareWorker(QThread):
     finished = pyqtSignal(dict)
-    error    = pyqtSignal(str)
+    error    = pyqtSignal(str, str)
     progress = pyqtSignal(str)
 
     def __init__(self, path1: str, path2: str):
@@ -915,31 +918,36 @@ class CompareWorker(QThread):
 
     def run(self):
         try:
-            self.progress.emit("Se citeste documentul 1...")
+            self.progress.emit("Se citește documentul 1...")
             paras1 = read_document(self.path1)
-            self.progress.emit("Se citeste documentul 2...")
+            self.progress.emit("Se citește documentul 2...")
             paras2 = read_document(self.path2)
 
             if not paras1:
                 self.error.emit(
-                    "Nu s-au putut extrage paragrafe din Document 1.\n"
-                    "Verificati ca fisierul nu este scanat (imagine)."
+                    "Nu s-au putut extrage paragrafe din documentul 1.\n"
+                    "Verificați dacă fișierul conține text și nu este scanat (imagine).",
+                    "",
                 )
                 return
             if not paras2:
                 self.error.emit(
-                    "Nu s-au putut extrage paragrafe din Document 2.\n"
-                    "Verificati ca fisierul nu este scanat (imagine)."
+                    "Nu s-au putut extrage paragrafe din documentul 2.\n"
+                    "Verificați dacă fișierul conține text și nu este scanat (imagine).",
+                    "",
                 )
                 return
 
-            self.progress.emit("Se compara documentele...")
+            self.progress.emit("Se compară documentele...")
             result = compare_documents(paras1, paras2)
             result["path1"] = self.path1
             result["path2"] = self.path2
             self.finished.emit(result)
         except Exception as e:
-            self.error.emit(str(e))
+            self.error.emit(
+                error_message(e, "Comparația nu a putut fi finalizată. Verificați documentele și încercați din nou."),
+                str(e) if not isinstance(e, UserFacingError) else "",
+            )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -974,7 +982,7 @@ class DropZone(QFrame):
         self.title_lbl.setFont(f)
         self.title_lbl.setStyleSheet("color:#111; background:transparent;")
 
-        self.hint_lbl = QLabel("drag & drop  sau  click pentru a selecta")
+        self.hint_lbl = QLabel("Trageți fișierul aici sau apăsați pentru a-l selecta")
         self.hint_lbl.setAlignment(Qt.AlignCenter)
         f2 = QFont()
         f2.setPointSize(8)
@@ -1059,7 +1067,7 @@ class DropZone(QFrame):
 
     def _browse(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, f"Selecteaza {self._title}",
+            self, f"Selectează {self._title}",
             self._last_dir, "Documente (*.docx *.pdf);;Word (*.docx);;PDF (*.pdf)"
         )
         if path:
@@ -1073,7 +1081,7 @@ class DropZone(QFrame):
     def _set_file_display(self, path: str):
         self.file_path = path
         self._last_dir = str(Path(path).parent)
-        self.hint_lbl.setText("incarcat")
+        self.hint_lbl.setText("Fișier încărcat")
         self.hint_lbl.setStyleSheet("color:#AAA; background:transparent;")
         self.file_lbl.setText(Path(path).name)
         self.clear_btn.show()
@@ -1111,7 +1119,7 @@ class DropZone(QFrame):
 
     def reset(self):
         self.file_path = None
-        self.hint_lbl.setText("drag & drop  sau  click pentru a selecta")
+        self.hint_lbl.setText("Trageți fișierul aici sau apăsați pentru a-l selecta")
         self.hint_lbl.setStyleSheet("color:#BBB; background:transparent;")
         self.file_lbl.setText("")
         self.clear_btn.hide()
@@ -1729,7 +1737,7 @@ class CompareWindow(QMainWindow):
             err = validate_same_type(self.drop_left.file_path, self.drop_right.file_path)
             if err:
                 self.status_lbl.setText(
-                    "\u26a0 Tipuri diferite! Comparatia e permisa doar PDF\u2194PDF sau DOCX\u2194DOCX."
+                    "Tipuri diferite! Comparația este permisă doar PDF\u2194PDF sau DOCX\u2194DOCX."
                 )
                 self.status_lbl.setStyleSheet("color:#E53935;")
                 self.compare_btn.setEnabled(False)
@@ -1762,7 +1770,7 @@ class CompareWindow(QMainWindow):
         # Validate same file type
         err = validate_same_type(p1, p2)
         if err:
-            QMessageBox.warning(self, "Tip incompatibil", err)
+            show_notification(self, QMessageBox.Warning, "Tipuri de fișiere incompatibile", err)
             return
 
         if self._worker and self._worker.isRunning():
@@ -1773,7 +1781,7 @@ class CompareWindow(QMainWindow):
                 pass
 
         self._set_busy(True)
-        self.status_lbl.setText("Se proceseaza...")
+        self.status_lbl.setText("Se procesează...")
 
         self._worker = CompareWorker(p1, p2)
         self._worker.finished.connect(self._on_comparison_done)
@@ -1788,10 +1796,10 @@ class CompareWindow(QMainWindow):
         self._update_compare_page(result)
         self.stack.setCurrentIndex(1)
 
-    @pyqtSlot(str)
-    def _on_comparison_error(self, msg: str):
+    @pyqtSlot(str, str)
+    def _on_comparison_error(self, msg: str, details: str = ""):
         self._set_busy(False)
-        QMessageBox.critical(self, "Eroare", msg)
+        show_notification(self, QMessageBox.Critical, "Eroare la comparație", msg, details)
 
     def _on_block_clicked(self, idx: int):
         new_sel = -1 if self._sel_idx == idx else idx
@@ -1888,7 +1896,7 @@ class CompareWindow(QMainWindow):
         now = datetime.now()
         default = now.strftime("%Y%m%d") + "_N_xxx_RaportComparatie-[xxxxx].html"
         path, _ = QFileDialog.getSaveFileName(
-            self, "Salveaza raport HTML", default, "HTML (*.html)"
+            self, "Salvează raportul HTML", default, "HTML (*.html)"
         )
         if not path:
             return
@@ -1898,9 +1906,13 @@ class CompareWindow(QMainWindow):
             )
             with open(path, "w", encoding="utf-8") as f:
                 f.write(content)
-            QMessageBox.information(self, "Export reusit", f"Salvat:\n{path}")
+            show_notification(self, QMessageBox.Information, "Export HTML reușit", f"Raportul HTML a fost salvat în:\n{path}")
         except Exception as e:
-            QMessageBox.critical(self, "Eroare la export", str(e))
+            show_notification(
+                self, QMessageBox.Critical, "Eroare la exportul HTML",
+                error_message(e, "Raportul HTML nu a putut fi salvat. Verificați locația aleasă și încercați din nou."),
+                str(e),
+            )
 
     def _export_pdf(self):
         """Export comparison report as PDF using fpdf2."""
@@ -1909,7 +1921,7 @@ class CompareWindow(QMainWindow):
         now = datetime.now()
         default = now.strftime("%Y%m%d") + "_N_xxx_RaportComparatie-[xxxxx].pdf"
         path, _ = QFileDialog.getSaveFileName(
-            self, "Salveaza raport PDF", default, "PDF (*.pdf)"
+            self, "Salvează raportul PDF", default, "PDF (*.pdf)"
         )
         if not path:
             return
@@ -1918,9 +1930,13 @@ class CompareWindow(QMainWindow):
                 self._result["path1"], self._result["path2"],
                 self._result, path,
             )
-            QMessageBox.information(self, "Export PDF reusit", f"Salvat:\n{path}")
+            show_notification(self, QMessageBox.Information, "Export PDF reușit", f"Raportul PDF a fost salvat în:\n{path}")
         except Exception as e:
-            QMessageBox.critical(self, "Eroare la export PDF", str(e))
+            show_notification(
+                self, QMessageBox.Critical, "Eroare la exportul PDF",
+                error_message(e, "Raportul PDF nu a putut fi salvat. Verificați locația aleasă și încercați din nou."),
+                str(e),
+            )
 
     def _show_doc_info(self):
         """Show document information dialog with metadata about both documents."""
@@ -1955,6 +1971,7 @@ def main():
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
 
     app = QApplication(sys.argv)
+    install_romanian_dialogs(app)
     app.setApplicationName("Comparer")
     app.setStyle("Fusion")
     app.setWindowIcon(_load_icon())

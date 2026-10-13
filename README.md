@@ -17,6 +17,9 @@ Compară două documente DOCX sau PDF editabile side-by-side, cu evidențierea d
 - **Export PDF** — salvează un raport PDF cu titlu "Documente comparate: doc1, doc2" și data/ora raportului
 - **Buton ștergere (✕)** — permite eliminarea unui document încărcat greșit fără a reseta toată interfața
 - **Randare optimizată pentru memorie** — folosește QListView cu delegate custom (model/view pattern) în loc de widget-uri individuale per paragraf, reducând drastic consumul de memorie pe documente mari
+- **Notificări în română** — mesaje de progres, avertismente, erori și confirmări de export cu diacritice; dialogurile Qt de fișiere și confirmările de suprascriere folosesc româna indiferent de limba sistemului
+
+Erorile bibliotecilor și ale sistemului sunt explicate în română. Mesajul tehnic original rămâne disponibil separat, prin **Afișează detaliile tehnice**, pentru diagnosticare. Dialogurile de fișiere folosesc interfața Qt, nu interfața nativă a sistemului, pentru a păstra această localizare inclusiv în executabil.
 
 ## Legendă culori
 
@@ -47,6 +50,14 @@ pip install -r requirements.txt
 ```bash
 python main.py
 ```
+
+## Teste
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+Testele rulează Qt fără ecran (`offscreen`) și verifică notificările, progresul, erorile, confirmarea de suprascriere și exporturile HTML/PDF.
 
 ## Shortcut-uri tastatură
 
