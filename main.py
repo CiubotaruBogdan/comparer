@@ -24,6 +24,7 @@ from document_core import (
     ComparisonCancelled,
 )
 from report_export import export_html_report, export_pdf_report, ExportCancelled
+from report_naming import suggest_report_name
 
 from docx import Document as DocxDocument
 import fitz  # PyMuPDF
@@ -1799,11 +1800,20 @@ class CompareWindow(QMainWindow):
         if not self._result or self._busy:
             return
         extension = format_name.lower()
-        default = datetime.now().strftime("%Y%m%d") + f"_RaportComparație.{extension}"
+        report_name = suggest_report_name(
+            self._result["path1"], self._result["path2"], extension
+        )
+        if report_name.warning:
+            show_notification(
+                self,
+                QMessageBox.Warning,
+                "Clasificare nedeterminată — raport draft",
+                report_name.warning,
+            )
         path, _ = QFileDialog.getSaveFileName(
             self,
             f"Salvează raportul {format_name}",
-            default,
+            report_name.filename,
             f"{format_name} (*.{extension})",
         )
         if not path:

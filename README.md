@@ -64,6 +64,31 @@ Python 3.12 este versiunea verificată pentru această aplicație.
 | `Ctrl+F` | Activează câmpul de căutare |
 | `F3` / `Shift+F3` | Următorul/anteriorul paragraf găsit |
 
+## Denumirea rapoartelor
+
+Documentele sursă trebuie denumite `AAAALLZZ_nivelclasificare_titlu.docx`
+sau `.pdf`, cu o dată calendaristică validă și unul dintre nivelurile exacte:
+`N` (neclasificat), `SSv` (secret de serviciu), `S` (secret), `SS` (strict secret).
+
+La export, numele propus este
+`AAAALLZZ_nivelclasificare_xxx-RaportComparație.html` sau `.pdf`.
+Data este cea a exportului, `xxx` este întotdeauna text fix, iar nivelul este
+maximul nivelurilor identificate în denumirile sursă: `N < SSv < S < SS`.
+De exemplu, pentru `20261001_N_Analiză.docx` și `20261002_S_Analiză.docx`,
+exportul din 19 octombrie 2026 propune `20261019_S_xxx-RaportComparație.pdf`.
+
+Dacă cel puțin o denumire este neconformă, aplicația afișează un avertisment
+și adaugă `-draft` înaintea extensiei. Dacă celălalt document are un nivel
+valid, acesta este păstrat: de exemplu, `SS` și un nivel necunoscut produc
+`20261019_SS_xxx-RaportComparație-draft.pdf`. Avertismentul identifică
+documentul neconform și explică faptul că nivelul acestuia nu a putut fi determinat.
+
+Doar dacă niciun nivel nu poate fi identificat se folosește implicit `N`:
+`20261019_N_xxx-RaportComparație-draft.pdf`. Marcajul implicit NECLASIFICAT
+nu confirmă clasificarea conținutului. În toate cazurile draft, stabilirea și
+aplicarea nivelului corect revin creatorului raportului. Numele propus poate
+fi editat în dialogul de salvare.
+
 ## Build executabil
 
 Pe Windows:
